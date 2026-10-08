@@ -1,235 +1,337 @@
-# ⚡ Launchpad
+# Launchpad
 
-> Переиспользуемый fullstack-каркас (**FastAPI + React 19 + TypeScript + SQLite/Postgres**) для команды **Y-not-devs** на 24–48 часовых хакатонах.
-> 
-> **Цель:** поднять готовый рабочий скелет за 2 минуты после объявления темы хакатона и сразу сфокусироваться на ценности продукта, алгоритмах и вау-демонстрации.
+> A production-ready, reusable fullstack template combining FastAPI and React 19 designed for rapid MVP delivery during 24–48 hour hackathons.
+
+## Table of Contents
+- [TL;DR](#tldr)
+- [Architecture](#architecture)
+- [Repository Structure](#repository-structure)
+- [Quick Start](#quick-start)
+- [Reuse in Your Own Project](#reuse-in-your-own-project)
+- [Configuration Reference](#configuration-reference)
+- [Key Decisions and Limitations](#key-decisions-and-limitations)
 
 ---
 
-## 🚀 Быстрый старт (всего 2 команды)
+## TL;DR
 
-Всё настроено так, чтобы запускаться кроссплатформенно (Windows PowerShell / macOS / Linux):
+- **What was built:** A feature-modular fullstack monorepo featuring FastAPI, SQLAlchemy 2.0, Alembic, React 19, Vite, and custom token-based UI primitives.
+- **For whom:** Hackathon teams (3–4 developers) needing to launch functional MVPs with shared data contracts, working persistence, and zero environment setup overhead.
+- **Current status:** Complete and verified. All unit tests pass (5/5), database migrations and seed scripts are verified, production frontend builds cleanly, and single-container Docker packaging is configured.
 
-```bash
-# 1. Разовая установка: создаст .env, виртуальное окружение, накатит миграции и сиды, поставит npm-пакеты
-npm run setup
+---
 
-# 2. Запуск бэкенда и фронтенда параллельно с красивыми логами:
-npm run dev
+## Architecture
+
+```mermaid
+graph TD
+    Client["Browser (React 19 + Vite SPA)"]
+    DevProxy["Vite Dev Server (:5173 /api proxy)"]
+    FastAPI["FastAPI Application (:8000)"]
+    Router["API Router (/api)"]
+    Items["Items Feature (CRUD)"]
+    Auth["Auth Feature (JWT / Bcrypt)"]
+    Uploads["Uploads Feature (Local Disk)"]
+    AI["AI Feature (OpenAI / Mock Client)"]
+    DB[(SQLite / PostgreSQL via SQLAlchemy)]
+    FS[Local File Storage: /data/uploads]
+    LLM[External LLM: OpenAI / Groq / Ollama]
+
+    Client -->|Development: proxy| DevProxy
+    DevProxy -->|Forward /api| FastAPI
+    Client -->|Production / Docker| FastAPI
+    FastAPI --> Router
+    Router --> Items
+    Router --> Auth
+    Router --> Uploads
+    Router --> AI
+    Items --> DB
+    Auth --> DB
+    Uploads --> FS
+    AI -->|HTTP API| LLM
 ```
 
-После старта доступны:
-- 🌐 **Frontend:** [http://localhost:5173](http://localhost:5173) (с проксированием всех `/api` запросов на бэкенд)
-- 📚 **FastAPI Swagger Docs:** [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
-- 🩺 **Healthcheck:** [http://localhost:8000/api/health](http://localhost:8000/api/health)
+### Component Overview
+
+| Component | Responsibility | Tech | Location in repo |
+| :--- | :--- | :--- | :--- |
+| **API Server** | HTTP routing, CORS, exception mapping, SPA serving | FastAPI, Uvicorn, Pydantic v2 | `backend/app/main.py`, `backend/app/api.py` |
+| **Core Infrastructure** | Settings management, DB session lifecycle, domain error classes | Pydantic-Settings, SQLAlchemy 2.0 | `backend/app/core/` |
+| **Database Migrations** | Schema versioning and batch-safe DDL generation | Alembic | `backend/migrations/`, `backend/alembic.ini` |
+| **Feature: Items** | Reference CRUD domain implementation | SQLAlchemy, Pydantic | `backend/app/features/items/` |
+| **Feature: Auth** | User registration, login, password hashing, JWT validation | PyJWT, Bcrypt | `backend/app/features/auth/` |
+| **Feature: Uploads** | Multipart file validation and local disk persistence | FastAPI UploadFile | `backend/app/features/uploads/` |
+| **Feature: AI** | OpenAI-compatible chat completion client with mock fallback | HTTPX | `backend/app/features/ai/` |
+| **Frontend SPA** | Client UI, layout navigation, interactive dashboard | React 19, TypeScript, Vite | `frontend/src/` |
+| **UI Design System** | Tokenized CSS variables and headless-style UI primitives | CSS Tokens, Lucide-React | `frontend/src/styles/`, `frontend/src/components/ui/` |
+| **Deployment Engine** | Unified multi-stage container build | Docker, Docker Compose | `Dockerfile`, `docker-compose.yml` |
 
 ---
 
-## 🛠 Технологический стек
-
-| Слой | Технологии | Почему выбрано для хакатона |
-| :--- | :--- | :--- |
-| **Backend** | **Python 3.11+**, **FastAPI**, **Pydantic v2** | Мгновенная разработка API, строгая валидация, автодокументация Swagger/OpenAPI. |
-| **Database** | **SQLAlchemy 2.0** + **Alembic** | По умолчанию лёгкий SQLite в файле (ноль настроек). Поддержка PostgreSQL в 1 строчку переменной `DATABASE_URL`. |
-| **Frontend** | **React 19**, **TypeScript**, **Vite** | Быстрый HMR, строгая типизация контрактов бэкенда, высокая скорость рендера. |
-| **Styling** | **Design Tokens & Modern CSS** | Тёмная палитра, стекломорфизм, микроанимации. Любой цвет меняется централизованно в `tokens.css`. Никаких громоздких сторонних UI-библиотек. |
-| **Tooling** | **Node Scripts**, **Ruff**, **Pytest**, **Docker** | Единый запуск `npm run dev`, автолинтер кода, фикстуры с БД в памяти для тестов. |
-
----
-
-## 📁 Структура проекта
-
-Архитектура организована по принципу **Feature-Sliced / Модульность по фичам**, чтобы несколько разработчиков могли одновременно писать свои модули без merge-конфликтов:
+## Repository Structure
 
 ```text
 launchpad/
-├── .env.example              # Шаблон конфигурации (общий для бэка, фронта и докера)
-├── package.json              # Корневой таск-раннер (npm run dev, npm run db:*, npm run test)
-├── Dockerfile                # Multi-stage сборка: фронтенд + бэкенд в одном контейнере
-├── docker-compose.yml        # Готовый запуск сервиса + опциональный PostgreSQL
-├── scripts/                  # Скрипты запуска (dev, setup, миграции) на чистом Node.js
-│
-├── backend/
-│   ├── pyproject.toml        # Зависимости Python (совместимо с uv и pip)
-│   ├── alembic.ini           # Конфигурация миграций
-│   ├── app/
-│   │   ├── main.py           # Инициализация FastAPI, CORS, SPA-раздача
-│   │   ├── api.py            # Точка сборки всех роутеров под /api
-│   │   ├── seed.py           # Заполнение базы демо-данными для презентации
-│   │   ├── core/             # Фундамент: config.py, db.py, errors.py, schemas.py
-│   │   └── features/         # МОДУЛИ (каждый модуль изолирован):
-│   │       ├── items/        # Базовый CRUD-пример (models, schemas, service, router)
-│   │       ├── auth/         # JWT + bcrypt авторизация (опционально)
-│   │       ├── uploads/      # Загрузка и раздача файлов до 10 МБ (опционально)
-│   │       └── ai/           # Клиент к OpenAI/Groq/OpenRouter/Ollama (опционально)
-│   └── tests/                # Быстрые pytest-тесты с БД в памяти
-│
-└── frontend/
-    ├── vite.config.ts        # Настройка проксирования /api и сборки
-    └── src/
-        ├── App.tsx           # Корневой переключатель экранов
-        ├── styles/           # tokens.css (переменные темы) и global.css
-        ├── lib/              # api.ts (клиент fetch), hooks.ts (useQuery), format.ts
-        ├── components/
-        │   ├── ui/           # Переиспользуемые компоненты (Button, Card, Modal, Input, Badge, Toast)
-        │   └── layout/       # Сайдбар, навигация, индикатор здоровья бэкенда
-        └── features/         # UI-экраны фич (items, ai, uploads, auth)
+├── .env.example              # Central configuration template for backend, frontend, and Docker.
+├── .gitignore                # Rules ignoring virtualenvs, SQLite DBs, uploads, and build outputs.
+├── Dockerfile                # Multi-stage container recipe building frontend and running FastAPI.
+├── docker-compose.yml        # Orchestration running the unified container and optional PostgreSQL.
+├── package.json              # Root script runner orchestrating backend, frontend, and database tasks.
+├── scripts/                  # Standalone Node.js automation scripts.
+│   ├── dev.mjs               # Concurrent development runner executing backend and frontend with unified logging.
+│   ├── lib.mjs               # Cross-platform subprocess execution, env parsing, and terminal coloring helpers.
+│   ├── py.mjs                # Wrapper executing commands inside the active Python environment.
+│   └── setup.mjs             # Zero-config initial setup automating env creation, venvs, DB, and npm deps.
+├── backend/                  # Python backend application root.
+│   ├── alembic.ini           # Alembic migration runner configuration.
+│   ├── pyproject.toml        # Backend dependencies and tool configurations (ruff, pytest).
+│   ├── migrations/           # Alembic database migration revisions and environment harness.
+│   │   ├── env.py            # Migration runtime wiring models dynamically to target metadata.
+│   │   └── versions/         # Autogenerated version migration files.
+│   ├── app/                  # Application code package.
+│   │   ├── main.py           # FastAPI factory, middleware configuration, and static SPA mounting.
+│   │   ├── api.py            # Central router registry with dynamic feature flag toggles.
+│   │   ├── seed.py           # Idempotent demo data generator for instant UI validation.
+│   │   ├── core/             # Framework-level modules (config, db, errors, schemas).
+│   │   └── features/         # Feature-sliced application modules.
+│   │       ├── items/        # Baseline CRUD module (models, schemas, service, router).
+│   │       ├── auth/         # Optional authentication module (JWT, bcrypt).
+│   │       ├── uploads/      # Optional file storage module with MIME sniffing.
+│   │       └── ai/           # Optional LLM integration module with mock response mode.
+│   └── tests/                # Automated pytest test suites with in-memory SQLite fixtures.
+└── frontend/                 # Client SPA application root.
+    ├── index.html            # HTML entry point with system fonts and responsive viewport.
+    ├── package.json          # Frontend dependencies (React 19, Lucide, Vite).
+    ├── tsconfig.json         # Strict TypeScript compiler configuration with path alias mappings.
+    ├── vite.config.ts        # Vite build and development configuration with /api reverse proxy.
+    ├── public/               # Public assets, icons, and SVG favicon.
+    └── src/                  # Client source code.
+        ├── main.tsx          # React application root mounting context providers and global styles.
+        ├── App.tsx           # Top-level view switcher and state host.
+        ├── types/            # TypeScript interfaces matching backend Pydantic models.
+        ├── styles/           # Global stylesheets and token variables (tokens.css, global.css).
+        ├── lib/              # Shared client utilities: typed HTTP client, hooks, date/byte formatters.
+        ├── context/          # Shared React contexts (backend health check and runtime meta).
+        ├── components/       # Component library split into ui/ primitives and layout/ shell.
+        └── features/         # Feature-specific components and UI pages (items, ai, uploads, auth).
 ```
 
 ---
 
-## 🧩 Гайд: Как добавить новую фичу за 5 минут
+## Quick Start
 
-Предположим, вам нужно добавить сущность **Проекты (Projects)**.
+### Prerequisites
+- Node.js 20+
+- Python 3.11+
+- Git
 
-### Шаг 1. Создать модуль на бэкенде
-Создайте папку `backend/app/features/projects/`:
+### 1. Initialize Project
+Clone or copy the repository, then run the automated initialization script:
 
-1. **`models.py`** — SQLAlchemy модель:
-   ```python
-   from sqlalchemy import String, Text
-   from sqlalchemy.orm import Mapped, mapped_column
-   from app.core.db import Base, TimestampMixin
-
-   class Project(TimestampMixin, Base):
-       __tablename__ = "projects"
-       id: Mapped[int] = mapped_column(primary_key=True)
-       name: Mapped[str] = mapped_column(String(100))
-       summary: Mapped[str] = mapped_column(Text, default="")
-   ```
-
-2. **`schemas.py`** — Pydantic контракты:
-   ```python
-   from pydantic import BaseModel
-
-   class ProjectCreate(BaseModel):
-       name: str
-       summary: str = ""
-
-   class ProjectRead(ProjectCreate):
-       id: int
-       class Config:
-           from_attributes = True
-   ```
-
-3. **`service.py`** — Чистая бизнес-логика (не знает про HTTP):
-   ```python
-   from sqlalchemy.orm import Session
-   from app.features.projects.models import Project
-   from app.features.projects.schemas import ProjectCreate
-
-   def create_project(db: Session, data: ProjectCreate) -> Project:
-       proj = Project(**data.model_dump())
-       db.add(proj)
-       db.commit()
-       db.refresh(proj)
-       return proj
-   ```
-
-4. **`router.py`** — FastAPI эндпоинты:
-   ```python
-   from fastapi import APIRouter
-   from app.core.db import DbSession
-   from app.features.projects import service
-   from app.features.projects.schemas import ProjectCreate, ProjectRead
-
-   router = APIRouter(prefix="/projects", tags=["projects"])
-
-   @router.post("", response_model=ProjectRead)
-   def create(data: ProjectCreate, db: DbSession):
-       return service.create_project(db, data)
-   ```
-
-### Шаг 2. Подключить роутер в `backend/app/api.py`
-Добавьте одну строчку:
-```python
-from app.features.projects.router import router as projects_router
-api.include_router(projects_router)
-```
-*(Модели подключаются в Alembic автоматически благодаря механизму `import_all_models()`!)*
-
-### Шаг 3. Сгенерировать и накатить миграцию базы данных
 ```bash
-npm run db:revision "add_projects_table"
+npm run setup
+```
+This command automatically:
+- Copies `.env.example` to `.env` if `.env` does not exist.
+- Creates `backend/.venv` (or uses `uv` if installed) and installs all backend dependencies in editable mode.
+- Applies all pending database migrations via Alembic.
+- Populates the database with initial demo data.
+- Installs all frontend npm dependencies.
+
+### 2. Start Development Servers
+Run the concurrent dev command from the root directory:
+
+```bash
+npm run dev
+```
+
+Endpoints available immediately:
+- **Web Interface:** [http://localhost:5173](http://localhost:5173)
+- **Interactive API Docs (Swagger):** [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
+- **Health Endpoint:** [http://localhost:8000/api/health](http://localhost:8000/api/health)
+
+### 3. Run Verification Tests
+```bash
+npm run test
+```
+
+---
+
+## Reuse in Your Own Project
+
+Use this checklist and snippet guide to scaffold a new hackathon project using this template.
+
+### Adaptation Checklist
+1. Copy the entire repository directory or use it as a template repository on GitHub.
+2. Update the project identifiers:
+   - In `.env`: set `APP_NAME` to your hackathon project name.
+   - In `backend/pyproject.toml` and `package.json`: adjust the project name field.
+3. Choose database persistence:
+   - For SQLite: leave `DATABASE_URL` untouched (default: `sqlite:///./data/app.db`).
+   - For PostgreSQL: set `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DB_NAME`.
+4. Enable or disable modules in `.env`:
+   - `ENABLE_AUTH=true` if user logins are required.
+   - `ENABLE_UPLOADS=true` if file attachments or images are required.
+   - `ENABLE_AI=true` if using LLMs (set `AI_API_KEY`).
+5. What can be safely deleted:
+   - If you do not need the sample CRUD: delete `backend/app/features/items/`, remove its router registration from `backend/app/api.py`, delete `frontend/src/features/items/`, and remove the initial Alembic migration in `backend/migrations/versions/`.
+
+---
+
+### Reusable Snippets
+
+#### 1. Define a Backend Domain Model
+Create `backend/app/features/<feature_name>/models.py`:
+
+```python
+from sqlalchemy import String, Text
+from sqlalchemy.orm import Mapped, mapped_column
+from app.core.db import Base, TimestampMixin
+
+class Entity(TimestampMixin, Base):
+    __tablename__ = "entities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    details: Mapped[str] = mapped_column(Text, default="")
+```
+
+#### 2. Define Request and Response Schemas
+Create `backend/app/features/<feature_name>/schemas.py`:
+
+```python
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field
+
+class EntityCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    details: str = ""
+
+class EntityRead(EntityCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+    updated_at: datetime
+```
+
+#### 3. Define Domain Business Logic
+Create `backend/app/features/<feature_name>/service.py`:
+
+```python
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.core.errors import NotFoundError
+from .models import Entity
+from .schemas import EntityCreate
+
+def list_entities(db: Session) -> list[Entity]:
+    return list(db.scalars(select(Entity).order_by(Entity.id.desc())).all())
+
+def create_entity(db: Session, data: EntityCreate) -> Entity:
+    record = Entity(**data.model_dump())
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+```
+
+#### 4. Define API Endpoints
+Create `backend/app/features/<feature_name>/router.py`:
+
+```python
+from fastapi import APIRouter, status
+from app.core.db import DbSession
+from . import service
+from .schemas import EntityCreate, EntityRead
+
+router = APIRouter(prefix="/entities", tags=["entities"])
+
+@router.get("", response_model=list[EntityRead])
+def list_all(db: DbSession):
+    return service.list_entities(db)
+
+@router.post("", response_model=EntityRead, status_code=status.HTTP_201_CREATED)
+def create_one(data: EntityCreate, db: DbSession):
+    return service.create_entity(db, data)
+```
+
+#### 5. Register Feature Router
+In `backend/app/api.py`, include the router:
+
+```python
+from app.features.entities.router import router as entities_router
+
+api.include_router(entities_router)
+```
+
+#### 6. Apply Database Migration
+Execute migration generation and upgrade from the repository root:
+
+```bash
+npm run db:revision -- "add_entities"
 npm run db:migrate
 ```
 
-### Шаг 4. Делать запросы с фронтенда
+#### 7. Call API from Frontend Component
+In `frontend/src/features/<feature_name>/api.ts`:
+
 ```typescript
 import { api } from '@/lib/api'
 
-// Типизированный вызов:
-const project = await api.post<Project>('/projects', { name: 'Super AI' })
+export interface Entity {
+  id: number
+  name: string
+  details: string
+  created_at: string
+}
+
+export const entitiesApi = {
+  list: () => api.get<Entity[]>('/entities'),
+  create: (data: { name: string; details?: string }) => api.post<Entity>('/entities', data),
+}
 ```
 
 ---
 
-## 🎛 Опциональные модули (включаются в `.env`)
+## Configuration Reference
 
-Вам не нужно писать код авторизации или загрузки файлов с нуля — они уже готовы:
+All settings are resolved from the root `.env` file via `pydantic-settings` on the backend and Vite build configurations on the frontend.
 
-### 1. Авторизация (JWT + Bcrypt)
-- В `.env`: `ENABLE_AUTH=true`
-- Готовые роуты: `/api/auth/register`, `/api/auth/login`, `/api/auth/me`
-- Для защиты любого роута на бэкенде:
-  ```python
-  from app.features.auth.deps import CurrentUser
-
-  @router.get("/protected")
-  def secret_route(user: CurrentUser):
-      return {"hello": user.email}
-  ```
-
-### 2. Загрузка файлов (Uploads)
-- В `.env`: `ENABLE_UPLOADS=true`
-- Готовые роуты: `POST /api/uploads` (до 10 МБ с проверкой типа), `GET /api/uploads`
-- Файлы безопасно сохраняются в `./data/uploads` и раздаются напрямую через `/uploads/<file_id>`.
-
-### 3. Интеграция с AI (OpenAI / Groq / Ollama / OpenRouter)
-- В `.env`: `ENABLE_AI=true`, задайте `AI_API_KEY` и `AI_MODEL`.
-- Если ключ **не задан**, модуль работает в **Mock-режиме** (фронтенд можно верстать и тестировать без расхода токенов!).
-- Для вызова LLM из любой вашей бизнес-логики:
-  ```python
-  from app.features.ai.service import complete
-
-  summary = complete("Сделай выжимку из текста: ...")
-  ```
+| Variable Name | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `APP_NAME` | No | `Launchpad` | Public title displayed in the API documentation, health endpoint, and frontend sidebar. |
+| `ENVIRONMENT` | No | `dev` | Application runtime environment (`dev`, `prod`, `test`). |
+| `API_PORT` | No | `8000` | Port on which the FastAPI Uvicorn server listens. |
+| `WEB_PORT` | No | `5173` | Port on which the Vite frontend development server runs. |
+| `CORS_ORIGINS` | No | `http://localhost:5173,http://127.0.0.1:5173` | Comma-delimited list of permitted CORS origins. |
+| `DATABASE_URL` | No | `sqlite:///./data/app.db` | SQLAlchemy connection string. Set to PostgreSQL URI if using Postgres. |
+| `ENABLE_AUTH` | No | `false` | Feature flag exposing `/api/auth/*` routes and JWT handling when set to `true`. |
+| `SECRET_KEY` | Conditional | `dev-secret-change-me...` | 32+ character HMAC key for signing JWT tokens. Required if `ENABLE_AUTH=true`. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `10080` (7 days) | Validity lifetime of issued user authentication tokens. |
+| `ENABLE_UPLOADS` | No | `false` | Feature flag exposing `/api/uploads` and local static media hosting. |
+| `UPLOAD_DIR` | No | `./data/uploads` | Local directory for storing user uploads. |
+| `MAX_UPLOAD_MB` | No | `10` | Maximum single-file upload size allowed before raising 400 Bad Request. |
+| `ENABLE_AI` | No | `false` | Feature flag enabling `/api/ai/*` chat completion routes. |
+| `AI_BASE_URL` | No | `https://api.openai.com/v1` | Target OpenAI-compatible API base URL (Groq, OpenRouter, Together, or Ollama). |
+| `AI_API_KEY` | Conditional | `""` | API bearer token for LLM provider. When left blank, returns mock responses for zero-token frontend testing. |
+| `AI_MODEL` | No | `gpt-4o-mini` | Name of model requested from the target provider. |
+| `VITE_API_URL` | No | `/api` (proxy default) | Target backend API root path. Override only if the API is hosted on a distinct remote host. |
 
 ---
 
-## 📜 Доступные команды (NPM Scripts)
+## Key Decisions and Limitations
 
-| Команда | Описание |
-| :--- | :--- |
-| `npm run setup` | Полная инициализация проекта с нуля (venv, pip, alembic, seed, npm install) |
-| `npm run dev` | Запуск бэкенда и фронтенда параллельно |
-| `npm run dev:api` | Запуск только FastAPI сервера с горячей перезагрузкой |
-| `npm run dev:web` | Запуск только Vite фронтенда |
-| `npm run db:migrate` | Применить все ожидающие миграции Alembic |
-| `npm run db:revision -- "desc"` | Сгенерировать новую миграцию на основе измененных моделей |
-| `npm run db:seed` | Заполнить базу демо-данными (`app/seed.py`) |
-| `npm run db:reset` | Сбросить базу, накатить миграции и сиды заново |
-| `npm run test` | Запуск тестов бэкенда через Pytest |
-| `npm run lint` | Проверка кода линтером Ruff и проверка типов TypeScript |
-| `npm run format` | Автоформатирование кода (Ruff) |
-| `npm run build` | Продакшн-сборка фронтенда |
+### Decisions Made
 
----
+- **Feature-sliced isolation:** Every feature module (`items`, `auth`, `uploads`, `ai`) bundles its own ORM models, Pydantic schemas, service layer, and router. Multiple team members can work on separate features concurrently with minimal Git conflicts.
+- **Auto-discovery of ORM models:** `backend/app/core/db.py` uses `pkgutil` to discover all feature `models.py` files. Adding a table requires no manual registration in `Base.metadata`.
+- **Lightweight data fetching on frontend:** Replaced heavy query managers with native typed `fetch` wrappers and concise `useQuery` / `useMutation` hooks (`frontend/src/lib/hooks.ts`). This avoids complex state stores and keeps bundle size small.
+- **Zero-runtime-CSS design tokens:** Defined design tokens directly in `frontend/src/styles/tokens.css` with a pre-built UI library (`Button`, `Card`, `Modal`, `Input`, `Badge`, `Toast`). This eliminates setup friction from utility CSS tools while preserving dark mode styling.
+- **Integrated SPA hosting for production:** In production mode or inside the Docker container, FastAPI automatically serves the built Vite assets from `frontend/dist` with client-side routing fallback. A single container deployment hosts both API and UI.
 
-## 🐳 Запуск через Docker
+### Limitations and Next Steps
 
-Для демонстрации проекта жюри или быстрого деплоя на виртуальный сервер:
-
-```bash
-docker compose up --build
-```
-Единый контейнер соберет фронтенд и поднимет FastAPI, раздавая всё на порту `8000`.
-
----
-
-## 💡 Чек-лист перед презентацией на хакатоне
-- [ ] Отредактируйте `backend/app/seed.py`: добавьте яркие, реалистичные демо-данные под тему кейса.
-- [ ] Запустите `npm run db:seed`.
-- [ ] Настройте название проекта в `APP_NAME` в файле `.env`.
-- [ ] Подготовьте сценарий клика по интерфейсу на 2–3 минуты.
-- [ ] Держите открытой вкладку с `/api/docs` для демонстрации бэкенд-архитектуры жюри.
+- **Database migration resets during active hackathons:** If rapid prototyping leads to conflicting Alembic revisions across branches, run `npm run db:reset` to rebuild the schema from scratch.
+- **Single-node file storage:** The `uploads` module persists files directly to local disk. For multi-node cloud deployments, replace `save_upload` in `backend/app/features/uploads/service.py` with an S3 client.
+- **WebSocket support:** The AI chat completion endpoint currently uses synchronous HTTP responses. Streaming (`StreamingResponse` with server-sent events) can be layered into `backend/app/features/ai/router.py` if token-by-token streaming is required.
