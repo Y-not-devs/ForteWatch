@@ -33,7 +33,9 @@ def test_auth_flow(client):
     assert reg.status_code == 201
     assert client.post("/api/auth/register", json=creds).status_code == 409
 
-    login = client.post("/api/auth/login", json={"email": "team@example.com", "password": "secret123"})
+    login = client.post(
+        "/api/auth/login", json={"email": "team@example.com", "password": "secret123"}
+    )
     token = login.json()["access_token"]
     me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.json()["email"] == "team@example.com"

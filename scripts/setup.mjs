@@ -45,7 +45,7 @@ if (useUv()) {
 
 step('База данных: миграции + демо-данные')
 if ((await runPython(['-m', 'alembic', 'upgrade', 'head'])) !== 0) fail('Миграции не применились')
-await runPython(['-m', 'app.seed'])
+if ((await runPython(['-m', 'app.seed'])) !== 0) fail('Демо-данные не загрузились')
 
 step('Frontend: зависимости')
 if ((await runNpm(['install'], { cwd: FRONTEND })) !== 0) fail('npm install завершился с ошибкой')

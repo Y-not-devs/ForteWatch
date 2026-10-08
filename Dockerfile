@@ -28,7 +28,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY backend/ ./backend/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-COPY .env.example ./.env
 
 EXPOSE 8000
 
