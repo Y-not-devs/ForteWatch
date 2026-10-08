@@ -1,5 +1,5 @@
 {
-  "name": "hackathon-starter",
+  "name": "launchpad",
   "version": "0.1.0",
   "private": true,
   "description": "FastAPI + React fullstack starter for 1–2 day hackathons",

@@ -43,7 +43,7 @@ export function AppLayout({ currentTab, onSelectTab, children }: AppLayoutProps)
               <Zap size={20} />
             </div>
             <div>
-              <div className="app-brand__title">{meta?.app_name || 'Hackathon Starter'}</div>
+              <div className="app-brand__title">{meta?.app_name || 'Launchpad'}</div>
               <div className="small faint">v0.1.0 • {meta?.environment || 'dev'}</div>
             </div>
           </div>

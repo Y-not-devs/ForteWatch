@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     # --- Приложение ---
-    app_name: str = "Hackathon Starter"
+    app_name: str = "Launchpad"
     environment: Literal["dev", "prod", "test"] = "dev"
     api_prefix: str = "/api"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

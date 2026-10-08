@@ -1,1 +1,1 @@
-# hackathon-starter backend
+# launchpad backend

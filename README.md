@@ -1,4 +1,4 @@
-# ⚡ Hackathon Starter
+# ⚡ Launchpad
 
 > Переиспользуемый fullstack-каркас (**FastAPI + React 19 + TypeScript + SQLite/Postgres**) для команды **Y-not-devs** на 24–48 часовых хакатонах.
 > 
@@ -42,7 +42,7 @@ npm run dev
 Архитектура организована по принципу **Feature-Sliced / Модульность по фичам**, чтобы несколько разработчиков могли одновременно писать свои модули без merge-конфликтов:
 
 ```text
-hackathon-starter/
+launchpad/
 ├── .env.example              # Шаблон конфигурации (общий для бэка, фронта и докера)
 ├── package.json              # Корневой таск-раннер (npm run dev, npm run db:*, npm run test)
 ├── Dockerfile                # Multi-stage сборка: фронтенд + бэкенд в одном контейнере
