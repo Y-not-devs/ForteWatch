@@ -54,7 +54,7 @@ export function UploadsPage() {
     <div className="stack" style={{ gap: 24 }}>
       <PageHeader
         title="Cashier video review"
-        description="Upload a recording for local storage. Automated violation analysis is the next milestone."
+        description="Store and list recordings. Open Analyze video from the sidebar for automated checks."
         actions={
           <Button
             variant="primary"
@@ -114,7 +114,7 @@ export function UploadsPage() {
         ) : !files?.length ? (
           <EmptyState
             title="No recordings yet"
-            description="Uploaded clips will appear here. Detection results and evidence frames are not implemented yet."
+            description="Uploaded clips will appear here. Automated findings and evidence are available on the analysis page."
           />
         ) : (
           <div className="grid" style={{ '--min': '260px' } as CSSProperties}>

@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     upload_dir: str = "./data/uploads"
     max_upload_mb: int = 512
 
+    # Jury API and fully local inference. Keys never enter the frontend bundle.
+    analysis_api_key: str = ""
+    analysis_dir: str = str(BACKEND_DIR / "data" / "analysis")
+    analysis_timeout_seconds: int = 280
+    ollama_url: str = "http://127.0.0.1:11434"
+    analysis_model: str = "qwen3.5:4b"
+
     # --- Раздача собранного фронтенда (prod / Docker) ---
     frontend_dist: str = str(ROOT_DIR / "frontend" / "dist")
 

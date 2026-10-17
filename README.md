@@ -4,7 +4,14 @@ Local-first video review service for identifying possible cashier-discipline vio
 
 ## Project status
 
-This repository is the application scaffold. The current UI can upload and list video files stored on the local server. Video analysis, evidence extraction, rule references, and the final results view are not implemented yet.
+The app provides authenticated asynchronous MOV analysis through `/api/v1/analyze` and
+`/api/v1/jobs/{job_id}`. The home page shows progress, a verdict, timestamped JPEG evidence,
+explanations and reviewed rule references. Inference uses a fully local Qwen3.5-4B model.
+The initial detector covers five visual review indicators; see the measured quality and
+limitations rather than treating a clean result as a guarantee.
+
+See [setup, API and assumptions](docs/analyze-api.md) and the
+[real-video evaluation](docs/evaluation.md).
 
 ## Stack
 
@@ -19,6 +26,8 @@ Requirements: Node.js 20.19+, Python 3.11+, and Git.
 
 ```bash
 npm run setup
+python scripts/init_analysis.py
+node scripts/py.mjs ../scripts/prepare_model.py
 npm run dev
 ```
 
@@ -26,12 +35,9 @@ Open <http://localhost:5173>. The API is at <http://localhost:8000/api/docs>.
 
 Uploads are saved under `backend/data/uploads/`; this folder and the source dataset are excluded from Git. Keep the videos and annotation spreadsheet from `open.zip` out of the repository unless the team explicitly approves sharing them.
 
-## Next implementation steps
-
-1. Create an analysis job for each accepted upload and show its processing status.
-2. Inspect the annotation spreadsheet and define the violation labels and expected output schema.
-3. Build a fully local video inference pipeline and capture timestamped evidence frames.
-4. Research and map findings to public regulatory sources, then show the source and explanation in the UI.
-5. Evaluate against the provided labeled clips and report limitations and false positives.
+Start local Ollama first. Model preparation downloads missing weights once, before processing.
+Enter the generated `ANALYSIS_API_KEY` from local `.env` in the UI. Existing upload/list
+functionality remains available at `/uploads`. Run `npm test`, `npm run lint` and `npm run build`
+for the automated checks; the analysis guide describes browser and all-video validation.
 
 The detector must not send recordings or derived frames to external AI APIs.
