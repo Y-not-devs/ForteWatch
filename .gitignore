@@ -45,3 +45,4 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 TASK.md
+.markdownlint.json

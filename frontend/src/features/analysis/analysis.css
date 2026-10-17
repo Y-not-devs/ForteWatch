@@ -1,7 +1,0 @@
-.analysis-page progress { width: 100%; height: 16px; accent-color: var(--accent); }
-.analysis-video { width: 100%; max-height: 65vh; background: #000; border-radius: var(--radius-md); }
-.analysis-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-.analysis-evidence figure { margin: 0; }
-.analysis-evidence img { width: 100%; border-radius: var(--radius-md); display: block; }
-.analysis-evidence figcaption { font-size: .85rem; margin-top: 5px; }
-.analysis-error { border: 1px solid #dc6868; border-radius: var(--radius-md); padding: 16px; }

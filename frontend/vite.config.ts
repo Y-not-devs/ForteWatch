@@ -1,5 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
+import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
 
 // .env общий и лежит в корне репозитория.
@@ -9,7 +10,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: '..',
-    plugins: [vue()],
+    plugins: [vue(), tailwindcss()],
     resolve: {
       alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
     },
