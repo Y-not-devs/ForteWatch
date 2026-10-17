@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Card, Input, PageHeader } from '@/components/ui'
 import { analysisApi, type AnalysisJob } from './api'
+import { ApiError } from '@/lib/api'
 import './analysis.css'
 
 const stages: Record<string, string> = {
   accepted: 'Видео принято', reading_video: 'Чтение кадров',
   local_inference: 'Локальный анализ', preparing_evidence: 'Подготовка доказательств',
+}
+const lastJobStorageKey = 'fortewatch.last-analysis-job'
+function readSavedJob() {
+  try { return sessionStorage.getItem(lastJobStorageKey) || '' }
+  catch { return '' }
 }
 const timecode = (seconds: number) =>
   `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toFixed(2).padStart(5, '0')}`
@@ -21,14 +27,24 @@ export function AnalysisPage() {
   const video = useRef<HTMLVideoElement>(null)
   const [job, setJob] = useState<AnalysisJob | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [savedJobId, setSavedJobId] = useState(readSavedJob)
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const pollingKey = useRef('')
-  const busy = uploading || job?.status === 'processing'
+  const busy = uploading || restoring || job?.status === 'processing'
+
+  function saveJob(id: string) {
+    try {
+      if (id) sessionStorage.setItem(lastJobStorageKey, id)
+      else sessionStorage.removeItem(lastJobStorageKey)
+    } catch { /* Analysis remains available when browser storage is blocked. */ }
+    setSavedJobId(id)
+  }
 
   useEffect(() => {
     setVideoReady(false); setVideoError(false)
-    if (!reviewFile) return
+    if (!reviewFile) { setVideoUrl(''); return }
     const url = URL.createObjectURL(reviewFile)
     setVideoUrl(url)
     return () => URL.revokeObjectURL(url)
@@ -66,10 +82,38 @@ export function AnalysisPage() {
     setReviewFile(file)
     pollingKey.current = key.trim()
     try {
-      setJob(await analysisApi.submit(file, pollingKey.current))
+      const next = await analysisApi.submit(file, pollingKey.current)
+      saveJob(next.job_id)
+      setJob(next)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить видео')
     } finally { setUploading(false) }
+  }
+
+  async function restore() {
+    if (!savedJobId || !key.trim() || busy) return
+    setError(''); setRestoring(true)
+    pollingKey.current = key.trim()
+    try {
+      const next = await analysisApi.get(savedJobId, pollingKey.current)
+      setReviewFile(null)
+      setJob(next)
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setKey(''); pollingKey.current = ''
+        setError('Неверный API-ключ. Введите ключ заново и повторите восстановление.')
+      } else if (err instanceof ApiError && err.status === 404) {
+        saveJob('')
+        setError('Задание больше недоступно. Выберите видео и запустите новый анализ.')
+      } else {
+        setError(err instanceof Error ? err.message : 'Не удалось восстановить задание')
+      }
+    } finally { setRestoring(false) }
+  }
+
+  function forgetSavedJob() {
+    saveJob('')
+    setError('')
   }
 
   return (
@@ -87,6 +131,14 @@ export function AnalysisPage() {
         <Button variant="primary" onClick={() => void submit()} disabled={busy || !file || !key.trim()}
           loading={uploading}>{uploading ? 'Загрузка видео…' : 'Запустить анализ'}</Button>
       </Card>
+      {savedJobId && <Card className="stack" style={{ gap: 12 }}>
+        {!job && <p>Найдено задание анализа. Введите API-ключ и восстановите его статус или результат.</p>}
+        <div className="row">
+          {!job && <Button variant="primary" onClick={() => void restore()} disabled={!key.trim() || busy}
+            loading={restoring}>Восстановить задание</Button>}
+          <Button onClick={forgetSavedJob} disabled={uploading || restoring}>Забыть задание</Button>
+        </div>
+      </Card>}
       {error && <div role="alert" className="analysis-error">
         <p>{error}</p>
         {job?.status === 'processing' && <Button onClick={() => { setError(''); setRetry(v => v + 1) }}>Повторить получение статуса</Button>}
@@ -101,6 +153,11 @@ export function AnalysisPage() {
         <p>Можно повторно загрузить запись после устранения причины.</p>
       </div>}
       {job?.status === 'done' && <section className="stack" style={{ gap: 20 }} aria-label="Результат анализа">
+        {!videoUrl && <label className="stack" style={{ gap: 8 }}>
+          <span>Исходное видео нужно выбрать заново для перемотки; стоп-кадры доступны ниже.</span>
+          <input aria-label="Исходное видео для перемотки" type="file" accept=".mov,video/quicktime"
+            onChange={e => setReviewFile(e.target.files?.[0] ?? null)} />
+        </label>}
         <Card className="stack" style={{ gap: 10 }}>
           <h2>{job.verdict === 'violation' ? 'Обнаружены признаки возможных нарушений' : 'Нарушение не обнаружено'}</h2>
           <p className="small muted">Обработано за {job.elapsed_sec.toFixed(1)} с</p>

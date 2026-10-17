@@ -106,4 +106,4 @@ TP or FN. A better timestamp MAE and two-second count do not compensate for wors
 verdict accuracy and more false positives; labels contain no event types with which
 to verify semantic localization. The agreed acceptance condition—fewer FP and FN no
 higher than baseline—fails. Commit `88e72c7` is therefore reverted on the follow-up
-branch. Until that revert is merged, `main` still runs the nine-frame variant.
+branch. PR #5 merged that revert; `main` runs the restored baseline.
