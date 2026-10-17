@@ -82,6 +82,7 @@ test('shows events, timecodes, evidence and the verified rule source', async ({ 
   await seek.click()
   await expect.poll(() => page.locator('video').evaluate(el =>
     (el as HTMLVideoElement).currentTime)).toBeCloseTo(1.2, 1)
+  await expect(page.locator('video')).toHaveJSProperty('seeking', false)
   await expect(page.locator('.analysis-evidence img')).toHaveCount(1)
   await expect(page.locator('.analysis-evidence img')).toHaveJSProperty('naturalWidth', 1)
   await expect(page.getByRole('link', { name: /Постановление НБРК/ })).toHaveAttribute('href',

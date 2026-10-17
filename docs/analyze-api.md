@@ -80,13 +80,8 @@ uses frame indexes, which the server maps back to actual decoder timestamps. Evi
 come from the original decoded video, not from generated imagery. VFR MOV seek failures at
 EOF fall back up to two frames or a sequential decode, reporting the actual timestamp. Malformed
 model results are retried up to three times; failures are not converted into clean verdicts.
-Each candidate is independently checked by the local model again on separate, larger evidence
-images before publication. The second pass receives neither the proposed rule nor the first
-pass description. It describes visible facts; the server requires all predicates for the
-proposed rule (for example, both a cashier departure and a remaining client). Accepted findings
-use this independent description rather than copying the original hypothesis. These checks
-cannot prevent the vision model from hallucinating facts; measured errors still matter.
-Temporal rules
+Each candidate is independently checked by the local model again on larger evidence frames
+before publication, to reduce false alarms caused by small contact-sheet tiles. Temporal rules
 use more widely spaced before/after frames to retain the customer/staff departure context.
 
 The initial detector supports five visual review indicators:

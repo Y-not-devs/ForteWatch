@@ -99,13 +99,13 @@ def read_frame(capture, timestamp: float, fps: float):
     return actual if actual > 0 else index / fps, frame
 
 
-def contact_sheet(frames):
-    columns, width = 3, 384
+def contact_sheet(frames, verification=False):
+    columns, width = (3, 512) if verification else (3, 384)
     rows = math.ceil(len(frames) / columns)
     # Portrait MOVs need taller tiles; forcing them into 320x180 reduced the
     # entire workstation to ~98 pixels wide and hid small visible objects.
     portrait = frames[0][1].shape[0] > frames[0][1].shape[1]
-    image_height = 512 if portrait else 216
+    image_height = (640 if portrait else 288) if verification else (512 if portrait else 216)
     tile_height = image_height + 20
     canvas = np.zeros((rows * tile_height, columns * width, 3), dtype=np.uint8)
     for index, (timestamp, frame) in enumerate(frames):
@@ -127,6 +127,39 @@ def contact_sheet(frames):
 
 
 def verify_event(client, url, model, frames, rule_id, deadline):
+    criteria = {
+        "unattended_cash": (
+            "Confirm ONLY if BOTH are clearly visible: (1) loose banknotes remain on the "
+            "staff counter, AND (2) the cashier has physically left the workstation. Locate "
+            "the CASHIER at the computer on the STAFF side, not the visitor on the other side. "
+            "An empty visitor chair, visitor leaving, seated cashier turning away, documents, "
+            "a black cash tray, bag, or desk equipment are NOT unattended cash. "
+            "If the cashier remains seated or standing by the computer, confirmed=false."
+        ),
+        "personal_items": (
+            "Confirm ONLY a clearly visible phone actively handled by the staff member, "
+            "food/drink consumed, or a personal handbag stored on the staff working surface. "
+            "Do NOT mistake money, documents, keyboards, black trays, counting machines or "
+            "visitor belongings for staff personal items. If uncertain, confirmed=false."
+        ),
+        "cash_concealment": (
+            "Confirm ONLY banknotes visibly being moved by the cashier into clothing or a "
+            "personal bag. Ordinary drawer use and cash counting are NOT concealment. "
+            "If the object or its destination is unclear, confirmed=false."
+        ),
+        "cash_not_secured": (
+            "Confirm ONLY when the sequence shows visible BANKNOTES remaining loose on the "
+            "staff counter as the preceding customer departs or is replaced by a different "
+            "visitor. Require evidence of the departure AND the remaining banknotes. Papers, "
+            "black trays and money currently being handed over/counted are NOT this event. "
+            "If there is no visible departure or no clearly visible banknotes, confirmed=false."
+        ),
+        "cashier_leaves_client": (
+            "Confirm ONLY when the CASHIER on the computer/staff side physically leaves "
+            "the desk and the client is still waiting on the visitor side. A visitor arriving "
+            "or leaving, a cashier remaining seated, or turning in the chair is NOT this event."
+        ),
+    }
     for attempt in range(3):
         remaining = deadline - time.monotonic()
         if remaining < 3:
@@ -140,43 +173,28 @@ def verify_event(client, url, model, frames, rule_id, deadline):
                 "think": False,
                 "keep_alive": "30m",
                 "format": EvidenceCheck.model_json_schema(),
-                "options": {"num_ctx": 8192, "num_predict": 500, "temperature": 0, "seed": 7},
+                "options": {"num_ctx": 8192, "num_predict": 80, "temperature": 0, "seed": 7},
                 "messages": [
                     {
                         "role": "user",
                         "content": (
-                            "Describe these bank CCTV frames independently in chronological order. "
-                            + "Frame timestamps in seconds: "
-                            + ", ".join(f"F{i}={t:.3f}" for i, (t, _) in enumerate(frames))
-                            + ". Gaps may occur. Do not identify faces, infer authorization or "
-                            "computer data. Return JSON describing the visible facts, not a "
-                            "yes/no verdict. Mark each boolean true ONLY with clear evidence: "
-                            "cashier_left_workstation requires a before/after sequence showing "
-                            "the staff member leaving, not a visitor leaving or a reflection; "
-                            "customer_still_at_counter means a visitor remains at the counter "
-                            "after the staff member leaves; banknotes_on_counter requires loose "
-                            "banknotes, not documents or equipment; previous_customer_departed "
-                            "requires a visible customer departure while those banknotes remain; "
-                            "cashier_personal_item requires staff handling a clearly visible "
-                            "mobile phone, eating/drinking, or a personal bag on the staff desk; "
-                            "banknotes_into_personal_storage requires visible banknotes moving "
-                            "into clothing or a personal bag. False for absent or uncertain facts. "
-                            "Identify the staff side by the computer and equipment, not clothing "
-                            "or image position. Reflections are not additional people. "
-                            "In observation describe ONLY what these frames show, including "
-                            "absence of evidence when relevant. Do not repeat a suspected event."
+                            "Independently verify this bank CCTV review indicator using ONLY these "
+                            "timestamped evidence frames in chronological order; gaps may occur. "
+                            "Ignore any prior model assumption. "
+                            + criteria[rule_id]
+                            + " Do not identify faces, infer authorization or "
+                            "computer data. Return JSON with confirmed=true or false."
                         ),
-                        "images": [jpeg(frame, max_width=640) for _, frame in frames],
+                        "images": [contact_sheet(frames, verification=True)],
                     }
                 ],
             },
         )
         response.raise_for_status()
         try:
-            check = EvidenceCheck.model_validate_json(
+            return EvidenceCheck.model_validate_json(
                 response.json()["message"]["content"]
-            )
-            return check if check.supports(rule_id) else None
+            ).confirmed
         except (ValueError, KeyError):
             if attempt == 2:
                 raise AnalysisError("Local evidence verifier returned invalid JSON") from None
@@ -302,16 +320,15 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
                         evidence.append(
                             EvidenceFrame(timestamp_sec=round(actual, 3), image_base64=jpeg(frame))
                         )
-                    verified = verify_event(
+                    if not verify_event(
                         client, url, model, evidence_images, event.rule_id, deadline
-                    )
-                    if verified is None:
+                    ):
                         continue
                     violations.append(
                         Violation(
                             type=rule.title,
                             timecode_sec=timestamp,
-                            description=verified.observation,
+                            description=event.observation,
                             evidence_frames=evidence,
                             rule=rule,
                         )

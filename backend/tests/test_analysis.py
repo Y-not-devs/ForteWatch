@@ -1,5 +1,4 @@
 import base64
-import json
 import subprocess
 import time
 
@@ -167,17 +166,10 @@ def test_real_decoder_evidence_and_done_api(client, tmp_path, monkeypatch, event
     writer.release()
     monkeypatch.setattr(worker, "check_local_model", lambda *_: None)
     monkeypatch.setattr(worker, "infer", lambda *_: events)
-    verified = worker.EvidenceCheck(
-        observation="A phone is held above the staff desk.",
-        cashier_left_workstation=False, customer_still_at_counter=False,
-        banknotes_on_counter=False, previous_customer_departed=False,
-        cashier_personal_item=True, banknotes_into_personal_storage=False,
-    )
-    monkeypatch.setattr(worker, "verify_event", lambda *_: verified if confirmed else None)
+    monkeypatch.setattr(worker, "verify_event", lambda *_: confirmed)
     result = worker.analyze(directory, "http://127.0.0.1:11434", "qwen3.5:4b", 10)
     assert result.verdict == ("violation" if events and confirmed else "no_violation")
     for violation in result.violations:
-        assert violation.description == verified.observation
         assert len(violation.evidence_frames) == 3
         for frame in violation.evidence_frames:
             raw = base64.b64decode(frame.image_base64)
@@ -298,49 +290,41 @@ def test_broken_mov_seek_index_uses_sequential_decode_and_real_pts():
     assert timestamp == 0.5 and frame.shape == (10, 10, 3)
 
 
-@pytest.mark.parametrize(
-    "rule_id,facts,accepted",
-    [
-        ("unattended_cash", {"banknotes_on_counter": True}, False),
-        ("cashier_leaves_client", {"customer_still_at_counter": True}, False),
-        ("cashier_leaves_client", {"cashier_left_workstation": True}, False),
-        ("cashier_leaves_client", {
-            "cashier_left_workstation": True, "customer_still_at_counter": True,
-        }, True),
-        ("cash_not_secured", {"previous_customer_departed": True}, False),
-        ("cash_not_secured", {
-            "previous_customer_departed": True, "banknotes_on_counter": True,
-        }, True),
-        ("personal_items", {"banknotes_on_counter": True}, False),
-        ("personal_items", {"cashier_personal_item": True}, True),
-        ("cash_concealment", {"banknotes_into_personal_storage": True}, True),
-    ],
-)
-def test_evidence_verifier_requires_rule_specific_visible_facts(rule_id, facts, accepted):
-    check = {
-        "observation": "The staff member remains seated at the desk.",
-        "cashier_left_workstation": False, "customer_still_at_counter": False,
-        "banknotes_on_counter": False, "previous_customer_departed": False,
-        "cashier_personal_item": False, "banknotes_into_personal_storage": False,
-        **facts,
-    }
-
+def test_evidence_verifier_rejects_unconfirmed_candidate():
     def transport(request):
-        return httpx.Response(200, json={"message": {"content": json.dumps(check)}})
+        return httpx.Response(200, json={"message": {"content": '{"confirmed":false}'}})
 
     frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        result = worker.verify_event(
+        assert not worker.verify_event(
             client,
             "http://127.0.0.1:11434",
             "qwen3.5:4b",
             frames,
-            rule_id,
+            "unattended_cash",
             time.monotonic() + 10,
         )
-        assert (result is not None) == accepted
-        if accepted:
-            assert result.observation == check["observation"]
+
+
+def test_invalid_verification_fails_after_three_attempts():
+    attempts = []
+
+    def transport(request):
+        attempts.append(request)
+        return httpx.Response(200, json={"message": {"content": '{"confirmed":'}})
+
+    frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        with pytest.raises(worker.AnalysisError, match="verifier returned invalid JSON"):
+            worker.verify_event(
+                client,
+                "http://127.0.0.1:11434",
+                "qwen3.5:4b",
+                frames,
+                "personal_items",
+                time.monotonic() + 10,
+            )
+    assert len(attempts) == 3
 
 
 def test_locked_progress_snapshot_does_not_fail_job_polling(client, monkeypatch):
@@ -364,25 +348,3 @@ def test_locked_progress_snapshot_does_not_fail_job_polling(client, monkeypatch)
     monkeypatch.setattr(type(directory), "read_text", read_text)
     response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
     assert response.json()["progress"] == 40
-
-
-@pytest.mark.parametrize("content", ['{"confirmed":', '{"confirmed":true}'])
-def test_invalid_verification_fails_after_three_attempts(content):
-    attempts = []
-
-    def transport(request):
-        attempts.append(request)
-        return httpx.Response(200, json={"message": {"content": content}})
-
-    frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
-    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        with pytest.raises(worker.AnalysisError, match="verifier returned invalid JSON"):
-            worker.verify_event(
-                client,
-                "http://127.0.0.1:11434",
-                "qwen3.5:4b",
-                frames,
-                "personal_items",
-                time.monotonic() + 10,
-            )
-    assert len(attempts) == 3
