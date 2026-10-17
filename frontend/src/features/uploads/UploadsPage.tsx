@@ -1,19 +1,12 @@
-import { useState, useRef } from 'react'
-import { UploadCloud, File, Download, Image as ImageIcon, AlertCircle } from 'lucide-react'
-import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  ErrorState,
-  PageHeader,
-  Skeleton,
-  useToast,
-} from '@/components/ui'
+import { useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { Download, FileVideo, UploadCloud } from 'lucide-react'
+import { Button, Card, EmptyState, ErrorState, PageHeader, Skeleton, useToast } from '@/components/ui'
+import { useAppMeta } from '@/context/MetaContext'
 import { useQuery } from '@/lib/hooks'
 import { formatBytes, formatDate } from '@/lib/format'
-import { useAppMeta } from '@/context/MetaContext'
 import { uploadsApi } from './api'
+
+const MAX_VIDEO_BYTES = 512 * 1024 * 1024
 
 export function UploadsPage() {
   const { meta } = useAppMeta()
@@ -21,40 +14,47 @@ export function UploadsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
-
   const { data: files, loading, error, refetch } = useQuery(
     uploadsApi.list,
     [],
-    { enabled: meta?.features.uploads ?? true }
+    { enabled: meta?.features.uploads ?? true },
   )
 
-  const handleUpload = async (file: globalThis.File) => {
+  const handleUpload = async (file: File) => {
+    const isVideo = file.type.startsWith('video/') || /\.(mov|mp4|m4v|avi|mkv)$/i.test(file.name)
+    if (!isVideo) {
+      toast('Choose a video file (MOV, MP4, M4V, AVI, or MKV).', 'error')
+      return
+    }
+    if (file.size > MAX_VIDEO_BYTES) {
+      toast('The video exceeds the 512 MB upload limit.', 'error')
+      return
+    }
+
     setUploading(true)
     try {
       await uploadsApi.upload(file)
-      toast(`Файл «${file.name}» успешно загружен!`, 'success')
+      toast(`Uploaded ${file.name}.`, 'success')
       refetch()
     } catch (err: any) {
-      toast(err.message || 'Ошибка загрузки файла', 'error')
+      toast(err.message || 'Video upload failed.', 'error')
     } finally {
       setUploading(false)
     }
   }
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault()
+  const onDrop = (event: DragEvent) => {
+    event.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) handleUpload(file)
+    const file = event.dataTransfer.files?.[0]
+    if (file) void handleUpload(file)
   }
-
-  const isImage = (type: string) => type.startsWith('image/')
 
   return (
     <div className="stack" style={{ gap: 24 }}>
       <PageHeader
-        title="Загрузка файлов"
-        description="Пример обработки мультимедиа: валидация размера, безопасное сохранение на сервере и прямая раздача файлов."
+        title="Cashier video review"
+        description="Upload a recording for local storage. Automated violation analysis is the next milestone."
         actions={
           <Button
             variant="primary"
@@ -62,155 +62,74 @@ export function UploadsPage() {
             loading={uploading}
             onClick={() => fileInputRef.current?.click()}
           >
-            Выбрать файл
+            Choose video
           </Button>
         }
       />
 
       <input
-        type="file"
         ref={fileInputRef}
+        type="file"
+        accept="video/*,.mov,.mp4,.m4v,.avi,.mkv"
         style={{ display: 'none' }}
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) handleUpload(file)
-          e.target.value = ''
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) void handleUpload(file)
+          event.target.value = ''
         }}
       />
 
-      {meta && !meta.features.uploads && (
-        <Card style={{ borderColor: 'hsl(38 95% 60% / 0.4)', background: 'hsl(38 95% 60% / 0.08)' }}>
-          <div className="row" style={{ gap: 12 }}>
-            <AlertCircle color="var(--warning)" />
-            <div className="small">
-              <strong>Внимание:</strong> модуль загрузки файлов отключён (<code>ENABLE_UPLOADS=false</code>). Включите его в <code>.env</code> для работы с локальным диском.
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Зона Drag & Drop */}
       <div
-        onDragOver={(e) => {
-          e.preventDefault()
+        onDragOver={(event) => {
+          event.preventDefault()
           setDragOver(true)
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
+        onClick={() => fileInputRef.current?.click()}
         style={{
           border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
           borderRadius: 'var(--radius-lg)',
           padding: '36px 20px',
           textAlign: 'center',
           background: dragOver ? 'var(--surface-hover)' : 'var(--surface)',
-          transition: 'all var(--t-fast)',
           cursor: 'pointer',
         }}
-        onClick={() => fileInputRef.current?.click()}
       >
         <div className="stack" style={{ alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 52,
-              height: 52,
-              borderRadius: '50%',
-              background: 'var(--accent-soft)',
-              display: 'grid',
-              placeItems: 'center',
-              color: 'var(--accent-2)',
-            }}
-          >
-            <UploadCloud size={26} />
-          </div>
+          <UploadCloud size={26} />
           <div>
-            <h3 style={{ fontSize: '1.05rem', marginBottom: 4 }}>
-              Перетащите файл сюда или нажмите для выбора
-            </h3>
-            <p className="small muted">
-              Поддерживаются изображения, аудио, PDF и документы до 10 МБ
-            </p>
+            <h3 style={{ fontSize: '1.05rem', marginBottom: 4 }}>Drop a cashier video here or choose a file</h3>
+            <p className="small muted">MOV, MP4, M4V, AVI, or MKV · up to 512 MB · stored on this server</p>
           </div>
         </div>
       </div>
 
-      {/* Список файлов */}
-      <div>
-        <h2 style={{ fontSize: '1.2rem', marginBottom: 16 }}>Загруженные файлы</h2>
-
+      <section>
+        <h2 style={{ fontSize: '1.2rem', marginBottom: 16 }}>Uploaded recordings</h2>
         {loading && !files ? (
-          <div className="grid">
-            <Skeleton height={100} />
-            <Skeleton height={100} />
-          </div>
+          <div className="grid"><Skeleton height={100} /><Skeleton height={100} /></div>
         ) : error ? (
           <ErrorState error={error} onRetry={refetch} />
-        ) : !files || files.length === 0 ? (
+        ) : !files?.length ? (
           <EmptyState
-            title="Нет загруженных файлов"
-            description="Загрузите первое изображение или документ, чтобы увидеть превью"
+            title="No recordings yet"
+            description="Uploaded clips will appear here. Detection results and evidence frames are not implemented yet."
           />
         ) : (
-          <div className="grid" style={{ '--min': '260px' } as any}>
-            {files.map((f) => (
-              <Card key={f.name} className="stack" style={{ gap: 12 }}>
-                {isImage(f.content_type) ? (
-                  <div
-                    style={{
-                      height: 140,
-                      borderRadius: 'var(--radius-sm)',
-                      overflow: 'hidden',
-                      background: 'var(--bg)',
-                      border: '1px solid var(--border)',
-                    }}
-                  >
-                    <img
-                      src={f.url}
-                      alt={f.name}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      loading="lazy"
-                    />
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      height: 80,
-                      borderRadius: 'var(--radius-sm)',
-                      background: 'var(--surface-strong)',
-                      display: 'grid',
-                      placeItems: 'center',
-                      color: 'var(--text-muted)',
-                    }}
-                  >
-                    <File size={32} />
-                  </div>
-                )}
-
-                <div className="stack" style={{ gap: 4 }}>
-                  <div className="row between">
-                    <span className="mono small" style={{ wordBreak: 'break-all', fontWeight: 600 }}>
-                      {f.name.slice(0, 16)}...
-                    </span>
-                    <Badge tone="neutral">{formatBytes(f.size)}</Badge>
-                  </div>
-                  <span className="faint small">{formatDate(f.created_at)}</span>
-                </div>
-
-                <div className="row between" style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                  <span className="faint small row" style={{ gap: 4 }}>
-                    {isImage(f.content_type) ? <ImageIcon size={14} /> : <File size={14} />}
-                    {f.content_type.split('/')[1] || 'file'}
-                  </span>
-                  <a href={f.url} download target="_blank" rel="noreferrer">
-                    <Button variant="secondary" size="sm" icon={<Download size={14} />}>
-                      Скачать
-                    </Button>
-                  </a>
-                </div>
+          <div className="grid" style={{ '--min': '260px' } as CSSProperties}>
+            {files.map((file) => (
+              <Card key={file.name} className="stack" style={{ gap: 12 }}>
+                <div className="row" style={{ gap: 8 }}><FileVideo size={20} /><strong className="mono small">{file.name}</strong></div>
+                <span className="faint small">{formatBytes(file.size)} · {formatDate(file.created_at)}</span>
+                <a href={file.url} download target="_blank" rel="noreferrer">
+                  <Button variant="secondary" size="sm" icon={<Download size={14} />}>Download</Button>
+                </a>
               </Card>
             ))}
           </div>
         )}
-      </div>
+      </section>
     </div>
   )
 }

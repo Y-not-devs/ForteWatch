@@ -16,6 +16,7 @@ from app.core.errors import AppError
 
 CHUNK_SIZE = 1024 * 1024
 PUBLIC_PREFIX = "/uploads"
+VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v", ".avi", ".mkv"}
 
 
 class UploadRead(BaseModel):
@@ -46,6 +47,8 @@ def _to_read(path: Path) -> UploadRead:
 async def save_upload(file: UploadFile) -> UploadRead:
     max_bytes = get_settings().max_upload_mb * 1024 * 1024
     suffix = Path(file.filename or "").suffix.lower()[:10]
+    if suffix not in VIDEO_SUFFIXES:
+        raise AppError("Unsupported video format")
     target = upload_dir() / f"{uuid.uuid4().hex}{suffix}"
 
     written = 0

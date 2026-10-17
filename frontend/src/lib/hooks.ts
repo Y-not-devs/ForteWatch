@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 /**
  * Загрузка данных с состоянием loading/error и refetch.
  *
- *   const { data, loading, error, refetch } = useQuery(() => itemsApi.list({ q }), [q])
+ *   const { data, loading, error, refetch } = useQuery(loadRecordings)
  */
 export function useQuery<T>(fn: () => Promise<T>, deps: unknown[] = [], { enabled = true } = {}) {
   const [data, setData] = useState<T | undefined>(undefined)
@@ -43,8 +43,8 @@ export function useQuery<T>(fn: () => Promise<T>, deps: unknown[] = [], { enable
 /**
  * Действие (POST/PATCH/DELETE) с состоянием loading/error.
  *
- *   const create = useMutation(itemsApi.create)
- *   await create.mutate({ title: 'New' })
+ *   const upload = useMutation(uploadRecording)
+ *   await upload.mutate(file)
  */
 export function useMutation<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
   const [loading, setLoading] = useState(false)

@@ -16,6 +16,15 @@ venv/
 # Backend data (SQLite, uploads)
 backend/data/
 data/
+open/
+videos/
+open_labels.xlsx
+open.zip
+*.mov
+*.mp4
+*.m4v
+*.avi
+*.mkv
 *.db
 *.sqlite
 *.sqlite3

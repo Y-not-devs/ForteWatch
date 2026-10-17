@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     # --- Приложение ---
-    app_name: str = "Launchpad"
+    app_name: str = "ForteWatch"
     environment: Literal["dev", "prod", "test"] = "dev"
     api_prefix: str = "/api"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     # --- Модули (включаются по необходимости) ---
     enable_auth: bool = False
     enable_uploads: bool = False
-    enable_ai: bool = False
 
     # --- Auth ---
     secret_key: str = "dev-secret-change-me-please-32-bytes-min"
@@ -39,13 +38,7 @@ class Settings(BaseSettings):
 
     # --- Uploads ---
     upload_dir: str = "./data/uploads"
-    max_upload_mb: int = 10
-
-    # --- AI (любой OpenAI-совместимый API: OpenAI, Groq, OpenRouter, Ollama, LM Studio...) ---
-    ai_base_url: str = "https://api.openai.com/v1"
-    ai_api_key: str = ""
-    ai_model: str = "gpt-4o-mini"
-    ai_timeout_seconds: float = 60
+    max_upload_mb: int = 512
 
     # --- Раздача собранного фронтенда (prod / Docker) ---
     frontend_dist: str = str(ROOT_DIR / "frontend" / "dist")

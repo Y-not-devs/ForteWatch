@@ -19,6 +19,15 @@
 frontend/dist
 backend/data
 data
+open/
+videos/
+open.zip
+open_labels.xlsx
+*.mov
+*.mp4
+*.m4v
+*.avi
+*.mkv
 **/*.db
 **/*.sqlite
 **/*.sqlite3

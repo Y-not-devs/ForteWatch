@@ -6,9 +6,7 @@ os.environ.update(
         "ENVIRONMENT": "test",
         "DATABASE_URL": "sqlite://",
         "ENABLE_AUTH": "true",
-        "ENABLE_UPLOADS": "false",
-        "ENABLE_AI": "true",
-        "AI_API_KEY": "",
+        "ENABLE_UPLOADS": "true",
         "FRONTEND_DIST": "./__no_dist__",
     }
 )

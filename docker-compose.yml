@@ -7,16 +7,12 @@ services:
       - "${API_PORT:-8000}:8000"
     environment:
       - ENVIRONMENT=prod
-      - APP_NAME=${APP_NAME:-Launchpad}
+      - APP_NAME=${APP_NAME:-ForteWatch}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
       - ENABLE_AUTH=${ENABLE_AUTH:-false}
       - ENABLE_UPLOADS=${ENABLE_UPLOADS:-false}
-      - ENABLE_AI=${ENABLE_AI:-false}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-change-me-please-32-bytes-min}
-      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-10}
-      - AI_BASE_URL=${AI_BASE_URL:-https://api.openai.com/v1}
-      - AI_API_KEY=${AI_API_KEY:-}
-      - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-512}
     volumes:
       - ./backend/data:/app/backend/data
     restart: unless-stopped

@@ -1,7 +1,7 @@
 [project]
-name = "launchpad-backend"
+name = "fortewatch-backend"
 version = "0.1.0"
-description = "FastAPI backend for Launchpad hackathon starter"
+description = "FastAPI backend for ForteWatch video review"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.115.0", # включает uvicorn, httpx, python-multipart, email-validator

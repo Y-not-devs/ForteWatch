@@ -43,9 +43,8 @@ if (useUv()) {
   if ((await pip(['install', '-e', '.[dev]'])) !== 0) fail('pip install завершился с ошибкой')
 }
 
-step('База данных: миграции + демо-данные')
+step('Database: migrations')
 if ((await runPython(['-m', 'alembic', 'upgrade', 'head'])) !== 0) fail('Миграции не применились')
-if ((await runPython(['-m', 'app.seed'])) !== 0) fail('Демо-данные не загрузились')
 
 step('Frontend: зависимости')
 if ((await runNpm(['install'], { cwd: FRONTEND })) !== 0) fail('npm install завершился с ошибкой')

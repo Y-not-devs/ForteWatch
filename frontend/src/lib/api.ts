@@ -1,8 +1,7 @@
 /**
  * Единый HTTP-клиент. Все запросы к бэкенду идут через него.
  *
- *   const items = await api.get<Page<Item>>('/items', { query: { q: 'demo' } })
- *   await api.post<Item>('/items', { title: 'New' })
+ *   const health = await api.get<{ status: string }>('/health')
  */
 
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? '/api'
