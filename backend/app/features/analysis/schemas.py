@@ -75,4 +75,22 @@ class ModelResponse(BaseModel):
 
 class EvidenceCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    confirmed: bool
+    observation: str = Field(min_length=10, max_length=800)
+    cashier_left_workstation: bool
+    customer_still_at_counter: bool
+    banknotes_on_counter: bool
+    previous_customer_departed: bool
+    cashier_personal_item: bool
+    banknotes_into_personal_storage: bool
+
+    def supports(self, rule_id: str) -> bool:
+        required = {
+            "personal_items": (self.cashier_personal_item,),
+            "cash_concealment": (self.banknotes_into_personal_storage,),
+            "unattended_cash": (self.banknotes_on_counter, self.cashier_left_workstation),
+            "cash_not_secured": (self.banknotes_on_counter, self.previous_customer_departed),
+            "cashier_leaves_client": (
+                self.cashier_left_workstation, self.customer_still_at_counter,
+            ),
+        }
+        return all(required[rule_id])

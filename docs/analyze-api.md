@@ -26,6 +26,10 @@ After preparation the service processes videos without internet access. Open
 `http://localhost:5173`, enter the project-only `ANALYSIS_API_KEY` from your local `.env`,
 choose a MOV recording and click **Запустить анализ**. No account registration is needed.
 The UI keeps the key only in memory. It must never be put in a `VITE_*` variable.
+The result includes a player backed by the selected local file and buttons that seek to
+event timestamps. The browser releases the file URL when another recording is submitted
+or the page is closed. If the browser cannot decode the MOV codec, evidence JPEGs remain
+available and the seek buttons are disabled; playback support is separate from API decoding.
 
 For a single-port production-style local run:
 
@@ -76,8 +80,13 @@ uses frame indexes, which the server maps back to actual decoder timestamps. Evi
 come from the original decoded video, not from generated imagery. VFR MOV seek failures at
 EOF fall back up to two frames or a sequential decode, reporting the actual timestamp. Malformed
 model results are retried up to three times; failures are not converted into clean verdicts.
-Each candidate is independently checked by the local model again on larger evidence frames
-before publication, to reduce false alarms caused by small contact-sheet tiles. Temporal rules
+Each candidate is independently checked by the local model again on separate, larger evidence
+images before publication. The second pass receives neither the proposed rule nor the first
+pass description. It describes visible facts; the server requires all predicates for the
+proposed rule (for example, both a cashier departure and a remaining client). Accepted findings
+use this independent description rather than copying the original hypothesis. These checks
+cannot prevent the vision model from hallucinating facts; measured errors still matter.
+Temporal rules
 use more widely spaced before/after frames to retain the customer/staff departure context.
 
 The initial detector supports five visual review indicators:
@@ -124,9 +133,31 @@ node scripts/py.mjs ../scripts/evaluate_dataset.py --archive /path/to/open.zip
 
 The evaluator submits all 42 archive videos under the neutral filename `recording.mov`,
 polls each for at most 300 seconds, validates response schemas, decodes **every** evidence
-JPEG and compares against `open_labels.xlsx`. It writes private job metrics to
-`backend/data/validation` and a key/frame-free table to `docs/evaluation.md`. A failure or
-timeout makes the evaluator exit nonzero. Run without other active analysis clients.
+JPEG and compares against `open_labels.xlsx` (22 positive and 20 negative labels). It reports
+TP/TN/FP/FN, failures, accuracy, precision, end-to-end recall and F1. Failed positive videos
+count against recall; failed jobs are reported separately from completed negative verdicts.
+Russian timestamps such as `1минута 8 секунда` are parsed strictly, and Cyrillic/Latin X names
+are normalized. Unknown labels, malformed timestamps and duplicate label keys abort the run.
+
+For each positive video with predictions, localization uses the distance from the single
+annotated timestamp to the nearest predicted timestamp, without a distance cutoff. MAE covers
+only those videos; misses have no finite localization error and remain visible in recall.
+The count within 2 seconds uses **all** positive videos as its denominator; 2 seconds is a
+diagnostic threshold, not a supplied judging tolerance. Types are not annotated: proximity
+does not establish a semantic match, and extra predictions cannot be scored as event FP from
+these labels alone. The two byte-duplicate pairs are still counted independently, and one
+positive duplicate pair has different annotated timestamps. These are development metrics,
+not held-out accuracy or an estimate of performance at an unseen camera angle.
+
+It writes private job metrics to `backend/data/validation` and a key/frame-free table to
+`docs/evaluation.md`. Diagnostic `--only`/`--limit` runs write `subset_metrics.json` and never
+overwrite the complete metrics or report. Each full run records worker and combined pipeline
+hashes, and aborts if the worker, rules, schemas, service or storage change during evaluation.
+A busy response aborts the run before it can publish an incomplete full report. Temporary
+Windows locks on the optional progress snapshot leave the job in `processing`; the next
+poll reads progress again.
+An analysis failure or timeout makes the evaluator exit nonzero.
+Run without other active analysis clients.
 
 One actual browser upload (no mocked responses):
 

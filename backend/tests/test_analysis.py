@@ -1,4 +1,5 @@
 import base64
+import json
 import subprocess
 import time
 
@@ -166,10 +167,17 @@ def test_real_decoder_evidence_and_done_api(client, tmp_path, monkeypatch, event
     writer.release()
     monkeypatch.setattr(worker, "check_local_model", lambda *_: None)
     monkeypatch.setattr(worker, "infer", lambda *_: events)
-    monkeypatch.setattr(worker, "verify_event", lambda *_: confirmed)
+    verified = worker.EvidenceCheck(
+        observation="A phone is held above the staff desk.",
+        cashier_left_workstation=False, customer_still_at_counter=False,
+        banknotes_on_counter=False, previous_customer_departed=False,
+        cashier_personal_item=True, banknotes_into_personal_storage=False,
+    )
+    monkeypatch.setattr(worker, "verify_event", lambda *_: verified if confirmed else None)
     result = worker.analyze(directory, "http://127.0.0.1:11434", "qwen3.5:4b", 10)
     assert result.verdict == ("violation" if events and confirmed else "no_violation")
     for violation in result.violations:
+        assert violation.description == verified.observation
         assert len(violation.evidence_frames) == 3
         for frame in violation.evidence_frames:
             raw = base64.b64decode(frame.image_base64)
@@ -290,28 +298,81 @@ def test_broken_mov_seek_index_uses_sequential_decode_and_real_pts():
     assert timestamp == 0.5 and frame.shape == (10, 10, 3)
 
 
-def test_evidence_verifier_rejects_unconfirmed_candidate():
+@pytest.mark.parametrize(
+    "rule_id,facts,accepted",
+    [
+        ("unattended_cash", {"banknotes_on_counter": True}, False),
+        ("cashier_leaves_client", {"customer_still_at_counter": True}, False),
+        ("cashier_leaves_client", {"cashier_left_workstation": True}, False),
+        ("cashier_leaves_client", {
+            "cashier_left_workstation": True, "customer_still_at_counter": True,
+        }, True),
+        ("cash_not_secured", {"previous_customer_departed": True}, False),
+        ("cash_not_secured", {
+            "previous_customer_departed": True, "banknotes_on_counter": True,
+        }, True),
+        ("personal_items", {"banknotes_on_counter": True}, False),
+        ("personal_items", {"cashier_personal_item": True}, True),
+        ("cash_concealment", {"banknotes_into_personal_storage": True}, True),
+    ],
+)
+def test_evidence_verifier_requires_rule_specific_visible_facts(rule_id, facts, accepted):
+    check = {
+        "observation": "The staff member remains seated at the desk.",
+        "cashier_left_workstation": False, "customer_still_at_counter": False,
+        "banknotes_on_counter": False, "previous_customer_departed": False,
+        "cashier_personal_item": False, "banknotes_into_personal_storage": False,
+        **facts,
+    }
+
     def transport(request):
-        return httpx.Response(200, json={"message": {"content": '{"confirmed":false}'}})
+        return httpx.Response(200, json={"message": {"content": json.dumps(check)}})
 
     frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        assert not worker.verify_event(
+        result = worker.verify_event(
             client,
             "http://127.0.0.1:11434",
             "qwen3.5:4b",
             frames,
-            "unattended_cash",
+            rule_id,
             time.monotonic() + 10,
         )
+        assert (result is not None) == accepted
+        if accepted:
+            assert result.observation == check["observation"]
 
 
-def test_invalid_verification_fails_after_three_attempts():
+def test_locked_progress_snapshot_does_not_fail_job_polling(client, monkeypatch):
+    manager = client.app.state.analysis
+    job_id = "d" * 32
+    directory = manager.root / job_id
+    directory.mkdir()
+    atomic_json(directory / "job.json", Job(job_id=job_id).model_dump_json())
+    atomic_json(directory / "progress.json", '{"progress":40,"stage":"local_inference"}')
+    read_text = type(directory).read_text
+
+    def read(path, *args, **kwargs):
+        if path.name == "progress.json":
+            raise PermissionError("Temporary Windows file lock")
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(directory), "read_text", read)
+    response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["status"] == "processing"
+    monkeypatch.setattr(type(directory), "read_text", read_text)
+    response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
+    assert response.json()["progress"] == 40
+
+
+@pytest.mark.parametrize("content", ['{"confirmed":', '{"confirmed":true}'])
+def test_invalid_verification_fails_after_three_attempts(content):
     attempts = []
 
     def transport(request):
         attempts.append(request)
-        return httpx.Response(200, json={"message": {"content": '{"confirmed":'}})
+        return httpx.Response(200, json={"message": {"content": content}})
 
     frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:

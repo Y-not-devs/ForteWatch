@@ -9,7 +9,10 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
+import re
+import statistics
 import sys
 import time
 import zipfile
@@ -28,6 +31,89 @@ from app.features.analysis.schemas import Job  # noqa: E402
 
 def normalized(name):
     return Path(name).stem.upper().replace("\u0425", "X")
+
+
+def parse_timecode(value):
+    """Read the supplied single-event timestamps; reject malformed labels."""
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip().lower().replace(",", ".")
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        seconds = float(text)
+    elif match := re.fullmatch(r"(\d+):([0-5]\d(?:\.\d+)?)", text):
+        seconds = 60 * int(match[1]) + float(match[2])
+    elif match := re.fullmatch(
+        r"(?:(\d+)\s*мин(?:ута|уты|ут)?\s*)?"
+        r"(?:(\d+(?:\.\d+)?)\s*сек(?:унда|унды|унд)?\s*)?", text
+    ):
+        if not any(match.groups()):
+            raise ValueError(f"Invalid label timestamp: {value!r}")
+        if match[1] and match[2] and float(match[2]) >= 60:
+            raise ValueError(f"Invalid label timestamp: {value!r}")
+        seconds = 60 * int(match[1] or 0) + float(match[2] or 0)
+    else:
+        raise ValueError(f"Invalid label timestamp: {value!r}")
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"Invalid label timestamp: {value!r}")
+    return seconds
+
+
+def load_labels(archive):
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(archive.read("open/open_labels.xlsx")), read_only=True, data_only=True,
+    )
+    try:
+        labels = {}
+        for name, timestamp, label in list(workbook.active.values)[1:]:
+            key = normalized(str(name))
+            verdict = {
+                "нарушение": "violation", "без нарушения": "no_violation",
+            }.get(str(label).strip().lower())
+            if key in labels or verdict is None or name is None:
+                raise ValueError(f"Duplicate or invalid label: {name!r}")
+            seconds = parse_timecode(timestamp)
+            if (verdict == "violation") != (seconds is not None):
+                raise ValueError(f"Timestamp does not match verdict: {name!r}")
+            labels[key] = {"verdict": verdict, "timecode_sec": seconds}
+        return labels
+    finally:
+        workbook.close()
+
+
+def summarize(rows):
+    completed = [row for row in rows if not row["error"]]
+    tp = sum(r["expected"] == r["received"] == "violation" for r in completed)
+    tn = sum(r["expected"] == r["received"] == "no_violation" for r in completed)
+    fp = sum(r["expected"] == "no_violation" and r["received"] == "violation"
+             for r in completed)
+    fn = sum(r["expected"] == "violation" and r["received"] == "no_violation"
+             for r in completed)
+    positives = sum(r["expected"] == "violation" for r in rows)
+    errors = [r["localization_error_sec"] for r in completed
+              if r.get("localization_error_sec") is not None]
+    return {
+        "completed": len(completed), "total": len(rows), "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+        "failed": len(rows) - len(completed), "positives": positives,
+        "accuracy": (tp + tn) / len(rows) if rows else None,
+        "precision": tp / (tp + fp) if tp + fp else None,
+        "recall": tp / positives if positives else None,
+        "f1": 2 * tp / (2 * tp + fp + positives - tp) if tp + fp + positives else None,
+        "localized": len(errors),
+        "localization_mae_sec": statistics.mean(errors) if errors else None,
+        "within_2_sec": sum(error <= 2 for error in errors),
+    }
+
+
+def percentage(value):
+    return f"{value:.2%}" if value is not None else "N/A"
+
+
+def pipeline_hash():
+    digest = hashlib.sha256()
+    for name in ("worker.py", "schemas.py", "rules.py", "service.py", "storage.py"):
+        digest.update(name.encode())
+        digest.update((ROOT / "backend/app/features/analysis" / name).read_bytes())
+    return digest.hexdigest()
 
 
 def validate_result(job):
@@ -55,6 +141,8 @@ def main():
         "--only", nargs="+", help="Diagnostic subset; never publishes a full report"
     )
     args = parser.parse_args()
+    if args.limit is not None and args.limit <= 0:
+        parser.error("--limit must be positive")
     key = os.environ.get("ANALYSIS_API_KEY") or dotenv_values(ROOT / ".env")["ANALYSIS_API_KEY"]
     private = ROOT / "backend/data/validation"
     private.mkdir(parents=True, exist_ok=True)
@@ -62,26 +150,32 @@ def main():
     output.parent.mkdir(exist_ok=True)
     rows = []
     with zipfile.ZipFile(args.archive) as archive:
-        workbook = openpyxl.load_workbook(
-            io.BytesIO(archive.read("open/open_labels.xlsx")),
-            read_only=True,
-            data_only=True,
-        )
-        labels = {
-            normalized(str(name)): ("no_violation" if "без" in str(label).lower() else "violation")
-            for name, _, label in list(workbook.active.values)[1:]
-        }
+        labels = load_labels(archive)
         videos = [name for name in archive.namelist() if name.endswith(".mov")]
         assert len(videos) == len(labels) == 42
         assert {normalized(name) for name in videos} == set(labels)
         selected = (
-            [name for name in videos if normalized(name) in args.only] if args.only else videos
+            [name for name in videos if normalized(name) in {normalized(n) for n in args.only}]
+            if args.only else videos
         )
+        if not selected:
+            parser.error("No videos matched --only")
+        script_hash = hashlib.sha256(
+            (ROOT / "backend/app/features/analysis/worker.py").read_bytes()
+        ).hexdigest()
+        pipeline_sha = pipeline_hash()
         for index, name in enumerate(selected[: args.limit]):
+            if pipeline_hash() != pipeline_sha:
+                raise RuntimeError("Analyzer changed during evaluation; rerun with a fixed version")
             started = time.monotonic()
             row = {
                 "video": Path(name).name,
-                "expected": labels[normalized(name)],
+                "expected": labels[normalized(name)]["verdict"],
+                "expected_timecode_sec": labels[normalized(name)]["timecode_sec"],
+                "predicted_timecodes_sec": [],
+                "localization_error_sec": None,
+                "worker_sha256": script_hash,
+                "pipeline_sha256": pipeline_sha,
                 "received": None,
                 "seconds": 0,
                 "error": "",
@@ -108,37 +202,70 @@ def main():
                         if result["status"] != "processing":
                             validate_result(result)
                             row["received"] = result["verdict"]
+                            row["predicted_timecodes_sec"] = [
+                                event["timecode_sec"] for event in result["violations"]
+                            ]
+                            if row["expected_timecode_sec"] is not None and result["violations"]:
+                                row["localization_error_sec"] = min(
+                                    abs(t - row["expected_timecode_sec"])
+                                    for t in row["predicted_timecodes_sec"]
+                                )
                             break
                         time.sleep(0.5)
                     else:
                         raise TimeoutError("No terminal result within 300 seconds")
             except Exception as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                    raise RuntimeError(
+                        "Analyzer is busy; evaluation is incomplete. "
+                        "No full report was written. Wait for the active job before rerunning."
+                    ) from None
                 row["error"] = str(exc).replace(str(key), "[REDACTED]")[:250]
             row["seconds"] = round(time.monotonic() - started, 3)
             if row["seconds"] >= 300:
                 row["error"] = row["error"] or "Exceeded 300 seconds"
             rows.append(row)
-            (private / "metrics.json").write_text(
+            metrics_file = "subset_metrics.json" if args.only or args.limit else "metrics.json"
+            (private / metrics_file).write_text(
                 json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             print(
-                f"{index + 1}/{len(videos)} {ascii(row['video'])} "
+                f"{index + 1}/{len(selected[: args.limit])} {ascii(row['video'])} "
                 f"{row['received']} {row['seconds']:.1f}s {row['error']}",
                 flush=True,
             )
-    succeeded = sum(not row["error"] for row in rows)
-    matched = sum(row["received"] == row["expected"] and not row["error"] for row in rows)
-    script_hash = hashlib.sha256(
-        (ROOT / "backend/app/features/analysis/worker.py").read_bytes()
-    ).hexdigest()
+    if pipeline_hash() != pipeline_sha:
+        raise RuntimeError("Analyzer changed during evaluation; rerun with a fixed version")
+    metrics = summarize(rows)
+    succeeded = metrics["completed"]
+    matched = metrics["tp"] + metrics["tn"]
+    mae = metrics["localization_mae_sec"]
+    mae_text = f"{mae:.3f} seconds" if mae is not None else "N/A"
     text = f"""# Real-video HTTP evaluation
 
 Archive: `open.zip`; expected verdicts: `open/open_labels.xlsx`.
 Run: {time.strftime("%Y-%m-%d %H:%M:%S %z")}. Local model: `qwen3.5:4b`.
 Worker SHA-256: `{script_hash}`.
+Pipeline SHA-256 (worker, schemas, rules, service, storage): `{pipeline_sha}`.
 Completed: **{succeeded}/{len(rows)}**.
 Verdict agreement: **{matched}/{len(rows)} ({matched / len(rows):.2%})**.
 Maximum upload-to-result time: **{max(row["seconds"] for row in rows):.3f} seconds**.
+
+Positive labels: **{metrics["positives"]}/{len(rows)}**.
+TP: **{metrics["tp"]}**; TN: **{metrics["tn"]}**;
+FP: **{metrics["fp"]}**; FN: **{metrics["fn"]}**; failed: **{metrics["failed"]}**.
+Precision: **{percentage(metrics["precision"])}**;
+end-to-end recall: **{percentage(metrics["recall"])}**; F1: **{percentage(metrics["f1"])}**.
+Nearest-prediction timestamp MAE: **{mae_text}**, over **{metrics["localized"]}**
+positive videos with a prediction.
+Within 2 seconds: **{metrics["within_2_sec"]}/{metrics["positives"]}**
+positive videos (diagnostic threshold, not an official judging tolerance).
+
+Failures count against accuracy and end-to-end recall, and are reported separately from FN.
+Localization pairs the single annotated timestamp with the nearest predicted timestamp in
+that video, without a distance cutoff. Missed videos are excluded from MAE, not treated as
+zero error. This measures temporal proximity only: types are not annotated, so it cannot
+establish semantic event matches or classify additional predictions as true/false events.
 
 This is agreement on the provided development dataset, not held-out accuracy. No training or
 filename/label lookup is performed. Two archive pairs are exact byte duplicates (4/47 and 5/48);
@@ -146,13 +273,15 @@ all 42 entries are submitted independently under the neutral filename `recording
 Every completed response was schema-validated and every evidence JPEG decoded. Videos,
 frames, API keys and per-job responses are excluded from this report and Git.
 
-| Video | Expected verdict | Received verdict | Upload-to-result seconds | Error |
-| --- | --- | --- | ---: | --- |
+| Video | Expected verdict | Received verdict | Total seconds | Timestamp error seconds | Error |
+| --- | --- | --- | ---: | ---: | --- |
 """
     for row in rows:
+        error = row["localization_error_sec"] if not row["error"] else None
+        localization = f"{error:.3f}" if error is not None else "—"
         text += (
             f"| {row['video']} | {row['expected']} | {row['received'] or '—'} | "
-            f"{row['seconds']:.3f} | {row['error'] or '—'} |\n"
+            f"{row['seconds']:.3f} | {localization} | {row['error'] or '—'} |\n"
         )
     if not args.limit and not args.only:
         output.write_text(text, encoding="utf-8")
