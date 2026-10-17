@@ -3,6 +3,7 @@
 import base64
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -60,6 +61,18 @@ invent rules or timestamps. Multiple different indicators are allowed. Output on
 
 class AnalysisError(Exception):
     pass
+
+
+def diagnostic(directory: Path, event: str, **fields):
+    """Opt-in local trace; never include images, credentials or input filenames."""
+    if os.environ.get("ANALYSIS_DIAGNOSTICS") != "1":
+        return
+    try:
+        with (directory / "diagnostics.jsonl").open("a", encoding="utf-8") as output:
+            output.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
+    except OSError:
+        # Optional diagnostics must not change the analysis outcome.
+        pass
 
 
 def progress(directory: Path, value: int, stage: str):
@@ -269,6 +282,7 @@ def infer(client, url, model, frames, deadline):
 
 
 def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResult:
+    started = time.monotonic()
     deadline = time.monotonic() + timeout - 2
     cv2.setNumThreads(2)
     capture = cv2.VideoCapture(str(directory / "input.mov"))
@@ -285,18 +299,27 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
             read_frame(capture, float(t), fps)
             for t in np.linspace(0, max(0, (count - 1) / fps), sample_count)
         ]
+        diagnostic(directory, "sampling", times=[t for t, _ in frames],
+                   duration_sec=duration, elapsed_sec=time.monotonic() - started)
         violations = []
         with httpx.Client(trust_env=False, follow_redirects=False) as client:
             check_local_model(client, url, model)
             for start in range(0, len(frames), BATCH_SIZE):
                 batch = frames[start : start + BATCH_SIZE]
                 progress(directory, 10 + round(75 * start / len(frames)), "local_inference")
-                for event in infer(client, url, model, batch, deadline):
+                proposed_at = time.monotonic()
+                candidates = infer(client, url, model, batch, deadline)
+                diagnostic(directory, "proposal", start=start, times=[t for t, _ in batch],
+                           candidates=[event.model_dump() for event in candidates],
+                           elapsed_sec=time.monotonic() - proposed_at)
+                for event in candidates:
                     timestamp = round(batch[event.frame_index][0], 3)
                     if any(
                         v.rule.id == event.rule_id and abs(v.timecode_sec - timestamp) < 6
                         for v in violations
                     ):
+                        diagnostic(directory, "duplicate", rule_id=event.rule_id,
+                                   timecode_sec=timestamp)
                         continue
                     rule = RULES[event.rule_id]
                     evidence = []
@@ -320,9 +343,20 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
                         evidence.append(
                             EvidenceFrame(timestamp_sec=round(actual, 3), image_base64=jpeg(frame))
                         )
-                    if not verify_event(
-                        client, url, model, evidence_images, event.rule_id, deadline
-                    ):
+                    verification_images = evidence_images
+                    if event.rule_id in {"cash_not_secured", "cashier_leaves_client"}:
+                        verification_images = [
+                            read_frame(capture, float(t), fps)
+                            for t in np.linspace(min(times), max(times), 9)
+                        ]
+                    verified_at = time.monotonic()
+                    confirmed = verify_event(
+                        client, url, model, verification_images, event.rule_id, deadline
+                    )
+                    diagnostic(directory, "verification", rule_id=event.rule_id,
+                               timecode_sec=timestamp, times=[t for t, _ in verification_images],
+                               confirmed=confirmed, elapsed_sec=time.monotonic() - verified_at)
+                    if not confirmed:
                         continue
                     violations.append(
                         Violation(
@@ -344,6 +378,7 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
         )
     finally:
         capture.release()
+        diagnostic(directory, "finished", elapsed_sec=time.monotonic() - started)
 
 
 if __name__ == "__main__":

@@ -38,3 +38,47 @@ than publishing a cascade of unprocessed videos as a full run.
 Separate-image trial: `54569e1cf7f79fc30cb796005e07499759d902e4b506a940207aa666c5a5d394`.
 
 Strict-verification trial: `f13178159a23e07d1f7a58f7f7339c6414ac868099324b88e244940cd8091e49`.
+
+## Reproducing diagnostic comparisons
+
+Diagnostics are off by default. Set `ANALYSIS_DIAGNOSTICS=1` in the API server's
+environment **before starting it**. Its worker inherits the flag. The normal
+API/result schema does not change. Each job writes a private `diagnostics.jsonl`
+next to `job.json` under `backend/data/analysis/<job_id>/` with:
+
+- actual sampled timestamps and sampling duration;
+- proposal batches, candidate frame indexes, rule IDs and model observations;
+- duplicate suppression and verification decisions, verification timestamps and duration;
+- total worker duration (including unsuccessful attempts; inspect job status separately).
+
+There are no images or credentials in the trace. Model observations still describe
+the recording and must remain private. An optional trace-write error does not abort
+analysis, so check trace completeness before drawing conclusions from an absent event.
+
+From the repository root, preserve each run in its own ignored directory:
+
+```powershell
+& backend/.venv/Scripts/python.exe scripts/evaluate_dataset.py --archive C:/datasets/open.zip --run-name baseline-01
+& backend/.venv/Scripts/python.exe scripts/evaluate_dataset.py --archive C:/datasets/open.zip --run-name candidate-01
+```
+
+Use separate consecutive runs with a fixed source version and the same local model;
+do not run them concurrently against the single GPU worker. Replace the archive path
+for your machine. Existing run names are rejected rather than overwritten. Named runs
+write their report into `backend/data/validation/<run-name>/`, preserving the public
+evaluation report. `--only`/`--limit` remain diagnostic subsets and do not write a
+full evaluation report.
+
+`manifest.json` records the model digest, Ollama/Python/OpenCV/platform versions,
+archive SHA-256, Git HEAD and exact source hashes. The `source/` directory retains
+the worker, rules, schemas, service, storage and evaluator used by that run, including
+uncommitted changes. Inference parameters are captured in the worker source snapshot.
+The API-reported model must match the manifest; a changed pipeline or model digest
+invalidates completion. A manifest still marked `running` is not a completed run.
+
+The local API and metadata reader must use the same server settings. These checks do
+not measure independent generalization or eliminate normal inference variability.
+Compare verdicts and per-video changes as well as aggregate scores. For localization,
+use the same matched set and disclose missing events; never improve MAE by dropping
+difficult predictions. The spreadsheet supplies no event types, so a nearby candidate
+or a positive verifier decision does not establish the semantic cause of an error.

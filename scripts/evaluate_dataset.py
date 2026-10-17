@@ -11,12 +11,15 @@ import io
 import json
 import math
 import os
+import platform
 import re
 import statistics
+import subprocess
 import sys
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cv2
 import httpx
@@ -116,6 +119,50 @@ def pipeline_hash():
     return digest.hexdigest()
 
 
+def capture_run_manifest(destination, archive):
+    """Keep exact source and local model identity beside a named private run."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if urlparse(settings.ollama_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Run metadata requires a local Ollama server")
+    with httpx.Client(trust_env=False, follow_redirects=False, timeout=10) as client:
+        response = client.get(settings.ollama_url.rstrip("/") + "/api/tags")
+        response.raise_for_status()
+        model = next(m for m in response.json()["models"]
+                     if m["name"] == settings.analysis_model)
+        response = client.get(settings.ollama_url.rstrip("/") + "/api/version")
+        response.raise_for_status()
+        version = response.json()["version"]
+    sources = destination / "source"
+    sources.mkdir()
+    hashes = {}
+    for name in ("worker.py", "schemas.py", "rules.py", "service.py", "storage.py"):
+        content = (ROOT / "backend/app/features/analysis" / name).read_bytes()
+        (sources / name).write_bytes(content)
+        hashes[name] = hashlib.sha256(content).hexdigest()
+    content = Path(__file__).read_bytes()
+    (sources / "evaluate_dataset.py").write_bytes(content)
+    hashes["evaluate_dataset.py"] = hashlib.sha256(content).hexdigest()
+    with archive.open("rb") as source:
+        archive_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
+    manifest = {
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+        "git_head": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+        ).strip(),
+        "source_sha256": hashes, "model": model, "ollama_version": version,
+        "python": platform.python_version(), "opencv": cv2.__version__,
+        "platform": platform.platform(), "archive_sha256": archive_sha256,
+        "analysis_timeout_seconds": settings.analysis_timeout_seconds,
+        "status": "running",
+    }
+    (destination / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    return manifest
+
+
 def validate_result(job):
     parsed = Job.model_validate(job)
     assert parsed.status == "done", parsed.error
@@ -137,16 +184,27 @@ def main():
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--run-name", help="Unique private run directory; preserve earlier reports")
     parser.add_argument(
         "--only", nargs="+", help="Diagnostic subset; never publishes a full report"
     )
     args = parser.parse_args()
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
+    if args.run_name and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", args.run_name):
+        parser.error("--run-name must be 1–64 letters, digits, hyphens or underscores")
     key = os.environ.get("ANALYSIS_API_KEY") or dotenv_values(ROOT / ".env")["ANALYSIS_API_KEY"]
     private = ROOT / "backend/data/validation"
     private.mkdir(parents=True, exist_ok=True)
     output = ROOT / "docs/evaluation.md"
+    manifest = None
+    if args.run_name:
+        private = private / args.run_name
+        if private.exists():
+            parser.error("Run directory already exists; choose a new --run-name")
+        private.mkdir()
+        output = private / "evaluation.md"
+        manifest = capture_run_manifest(private, args.archive)
     output.parent.mkdir(exist_ok=True)
     rows = []
     with zipfile.ZipFile(args.archive) as archive:
@@ -180,6 +238,7 @@ def main():
                 "seconds": 0,
                 "error": "",
                 "job_id": None,
+                "model": None,
             }
             try:
                 with httpx.Client(
@@ -201,7 +260,10 @@ def main():
                         result = response.json()
                         if result["status"] != "processing":
                             validate_result(result)
+                            if manifest and result["model"] != manifest["model"]["name"]:
+                                raise ValueError("API model differs from recorded local model")
                             row["received"] = result["verdict"]
+                            row["model"] = result["model"]
                             row["predicted_timecodes_sec"] = [
                                 event["timecode_sec"] for event in result["violations"]
                             ]
@@ -236,15 +298,32 @@ def main():
             )
     if pipeline_hash() != pipeline_sha:
         raise RuntimeError("Analyzer changed during evaluation; rerun with a fixed version")
+    if manifest:
+        from app.core.config import get_settings
+
+        with httpx.Client(trust_env=False, follow_redirects=False, timeout=10) as client:
+            response = client.get(get_settings().ollama_url.rstrip("/") + "/api/tags")
+            response.raise_for_status()
+            digest = next(m["digest"] for m in response.json()["models"]
+                          if m["name"] == manifest["model"]["name"])
+        if digest != manifest["model"]["digest"]:
+            raise RuntimeError("Model changed during evaluation; run is incomplete")
+        manifest["status"] = "complete" if all(not row["error"] for row in rows) else "failed"
+        manifest["total"] = len(rows)
+        manifest["subset"] = bool(args.only or args.limit)
+        (private / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
     metrics = summarize(rows)
     succeeded = metrics["completed"]
     matched = metrics["tp"] + metrics["tn"]
     mae = metrics["localization_mae_sec"]
     mae_text = f"{mae:.3f} seconds" if mae is not None else "N/A"
+    model_names = ", ".join(sorted({r["model"] for r in rows if r["model"]})) or "unavailable"
     text = f"""# Real-video HTTP evaluation
 
 Archive: `open.zip`; expected verdicts: `open/open_labels.xlsx`.
-Run: {time.strftime("%Y-%m-%d %H:%M:%S %z")}. Local model: `qwen3.5:4b`.
+Run: {time.strftime("%Y-%m-%d %H:%M:%S %z")}. Reported model: `{model_names}`.
 Worker SHA-256: `{script_hash}`.
 Pipeline SHA-256 (worker, schemas, rules, service, storage): `{pipeline_sha}`.
 Completed: **{succeeded}/{len(rows)}**.

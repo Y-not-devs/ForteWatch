@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,3 +87,64 @@ def test_busy_analyzer_does_not_publish_a_cascade_of_failed_video_results(tmp_pa
         evaluation.main()
     assert not (tmp_path / "docs/evaluation.md").exists()
     assert not (tmp_path / "backend/data/validation/metrics.json").exists()
+
+
+@pytest.mark.parametrize("name", ["../escape", "nested/run", " ", "a" * 65])
+def test_named_run_rejects_invalid_directory(name, monkeypatch):
+    monkeypatch.setattr(evaluation.sys, "argv", [
+        "evaluate_dataset.py", "--archive", "open.zip", "--run-name", name,
+    ])
+    with pytest.raises(SystemExit) as exc:
+        evaluation.main()
+    assert exc.value.code == 2
+
+
+def test_named_run_does_not_overwrite_existing_results(tmp_path, monkeypatch):
+    saved = tmp_path / "backend/data/validation/baseline"
+    saved.mkdir(parents=True)
+    metrics = saved / "metrics.json"
+    metrics.write_text("preserve me", encoding="utf-8")
+    monkeypatch.setattr(evaluation, "ROOT", tmp_path)
+    monkeypatch.setenv("ANALYSIS_API_KEY", "test-key")
+    monkeypatch.setattr(evaluation.sys, "argv", [
+        "evaluate_dataset.py", "--archive", "open.zip", "--run-name", "baseline",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        evaluation.main()
+    assert exc.value.code == 2
+    assert metrics.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_manifest_records_exact_source_model_and_dataset_without_credentials(tmp_path, monkeypatch):
+    from app.core import config
+
+    sources = tmp_path / "backend/app/features/analysis"
+    sources.mkdir(parents=True)
+    for name in ("worker.py", "schemas.py", "rules.py", "service.py", "storage.py"):
+        (sources / name).write_bytes(b"source snapshot\n")
+    archive = tmp_path / "open.zip"
+    archive.write_bytes(b"private dataset")
+    run = tmp_path / "run"
+    run.mkdir()
+    settings = SimpleNamespace(ollama_url="http://127.0.0.1:11434",
+                               analysis_model="local:test", analysis_timeout_seconds=280)
+
+    def get(url):
+        data = ({"models": [{"name": "local:test", "digest": "model-digest"}]}
+                if url.endswith("/tags") else {"version": "test-version"})
+        return httpx.Response(200, json=data, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(evaluation, "ROOT", tmp_path)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    monkeypatch.setattr(evaluation.httpx, "Client",
+                        lambda **kwargs: nullcontext(SimpleNamespace(get=get)))
+    monkeypatch.setattr(evaluation.subprocess, "check_output", lambda *a, **k: "head\n")
+    monkeypatch.setattr(evaluation.platform, "platform", lambda: "test-platform")
+    monkeypatch.setenv("ANALYSIS_API_KEY", "secret-must-not-be-recorded")
+    manifest = evaluation.capture_run_manifest(run, archive)
+    assert manifest["model"]["digest"] == "model-digest"
+    assert manifest["status"] == "running"
+    assert manifest["archive_sha256"] == evaluation.hashlib.sha256(b"private dataset").hexdigest()
+    assert (run / "source/worker.py").read_bytes() == b"source snapshot\n"
+    assert "secret-must-not-be-recorded" not in json.dumps(manifest)
+    assert not (run / "open.zip").exists()
