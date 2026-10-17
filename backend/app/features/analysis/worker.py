@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import cv2
 import httpx
 import numpy as np
+from pydantic import ValidationError
 
 from app.features.analysis.rules import RULES
 from app.features.analysis.schemas import AnalysisResult, EvidenceFrame, ModelResponse, Violation
@@ -74,15 +75,28 @@ def read_frame(capture, timestamp: float, fps: float):
         if ok and frame is not None:
             actual = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
             return actual if actual > 0 else target / fps, frame
-    raise AnalysisError("Video contains an unreadable frame")
+    # Some VFR MOVs cannot seek to any of their last few packets. A sequential
+    # decode reaches the real frame without relying on the container's seek index.
+    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    frame = None
+    for _ in range(index + 1):
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            raise AnalysisError("Video contains an unreadable frame")
+    actual = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+    return actual if actual > 0 else index / fps, frame
 
 
 def contact_sheet(frames):
     rows = math.ceil(len(frames) / 4)
-    canvas = np.zeros((rows * 200, 4 * 320, 3), dtype=np.uint8)
+    # Portrait MOVs need taller tiles; forcing them into 320x180 reduced the
+    # entire workstation to ~98 pixels wide and hid small visible objects.
+    image_height = 320 if frames[0][1].shape[0] > frames[0][1].shape[1] else 180
+    tile_height = image_height + 20
+    canvas = np.zeros((rows * tile_height, 4 * 320, 3), dtype=np.uint8)
     for index, (timestamp, frame) in enumerate(frames):
-        x, y = index % 4 * 320, index // 4 * 200
-        scale = min(320 / frame.shape[1], 180 / frame.shape[0])
+        x, y = index % 4 * 320, index // 4 * tile_height
+        scale = min(320 / frame.shape[1], image_height / frame.shape[0])
         image = cv2.resize(frame, (round(frame.shape[1] * scale), round(frame.shape[0] * scale)))
         left = x + (320 - image.shape[1]) // 2
         canvas[y + 20 : y + 20 + image.shape[0], left : left + image.shape[1]] = image
@@ -126,6 +140,9 @@ def check_local_model(client, url: str, model: str):
 
 def infer(client, url, model, frames, deadline):
     image = contact_sheet(frames)
+    schema = ModelResponse.model_json_schema()
+    schema["$defs"]["ModelEvent"]["properties"]["frame_index"]["maximum"] = len(frames) - 1
+    failure = "invalid_json"
     for attempt in range(3):
         remaining = deadline - time.monotonic()
         if remaining < 3:
@@ -138,8 +155,8 @@ def infer(client, url, model, frames, deadline):
                 "stream": False,
                 "think": False,
                 "keep_alive": "30m",
-                "format": ModelResponse.model_json_schema(),
-                "options": {"num_ctx": 4096, "num_predict": 650, "temperature": 0, "seed": 7},
+                "format": schema,
+                "options": {"num_ctx": 8192, "num_predict": 1600, "temperature": 0, "seed": 7},
                 "messages": [{"role": "user", "content": PROMPT, "images": [image]}],
             },
         )
@@ -149,9 +166,16 @@ def infer(client, url, model, frames, deadline):
             if any(event.frame_index >= len(frames) for event in result.events):
                 raise ValueError("Model referred to a non-existent frame")
             return result.events
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as exc:
+            failure = (
+                ",".join(sorted({e["type"] for e in exc.errors(include_input=False)}))
+                if isinstance(exc, ValidationError)
+                else "invalid_frame_reference"
+            )
             if attempt == 2:
-                raise AnalysisError("Local model returned an invalid structured result") from None
+                raise AnalysisError(
+                    "Local model returned an invalid structured result: " + failure
+                ) from None
     raise AssertionError("Unreachable")
 
 

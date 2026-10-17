@@ -103,6 +103,16 @@ def test_restart_preserves_terminal_results_and_fails_interrupted(tmp_path):
         manager.close()
 
 
+def test_second_server_cannot_interrupt_active_jobs(client):
+    manager = client.app.state.analysis
+    directory = manager.root / ("d" * 32)
+    directory.mkdir()
+    atomic_json(directory / "job.json", Job(job_id=directory.name).model_dump_json())
+    with pytest.raises(RuntimeError, match="already owned"):
+        service.JobManager(manager.settings)
+    assert manager.get(directory.name).status == "processing"
+
+
 def test_subprocess_timeout_is_killed_and_reported(client, monkeypatch):
     manager = client.app.state.analysis
 
@@ -209,3 +219,70 @@ def test_legacy_upload_endpoint_remains_available(client):
     response = client.post("/api/uploads", files={"file": ("clip.mov", b"legacy video")})
     assert response.status_code == 201
     assert len(client.get("/api/uploads").json()) == 1
+
+
+def test_malformed_model_output_is_retried_before_failure():
+    attempts = []
+
+    def transport(request):
+        attempts.append(request)
+        content = '{"events":' if len(attempts) < 3 else '{"events": []}'
+        return httpx.Response(200, json={"message": {"content": content}})
+
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        assert (
+            worker.infer(
+                client, "http://127.0.0.1:11434", "qwen3.5:4b", [(0, frame)], time.monotonic() + 10
+            )
+            == []
+        )
+    assert len(attempts) == 3
+
+
+def test_invalid_frame_is_not_returned_as_a_clean_verdict():
+    attempts = []
+
+    def transport(request):
+        attempts.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": '{"events":[{"frame_index":99,"rule_id":"personal_items",'
+                    '"observation":"A visible phone is on the cashier desk."}]}'
+                }
+            },
+        )
+
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        with pytest.raises(worker.AnalysisError, match="invalid_frame_reference"):
+            worker.infer(
+                client, "http://127.0.0.1:11434", "qwen3.5:4b", [(0, frame)], time.monotonic() + 10
+            )
+    assert len(attempts) == 3
+
+
+def test_broken_mov_seek_index_uses_sequential_decode_and_real_pts():
+    class Capture:
+        sequential = False
+        index = 0
+        last = 0
+
+        def set(self, prop, value):
+            self.index = int(value)
+            self.sequential = value == 0
+
+        def read(self):
+            if not self.sequential:
+                return False, None
+            self.last = self.index
+            self.index += 1
+            return True, np.zeros((10, 10, 3), dtype=np.uint8)
+
+        def get(self, prop):
+            return self.last * 100
+
+    timestamp, frame = worker.read_frame(Capture(), 0.5, 10)
+    assert timestamp == 0.5 and frame.shape == (10, 10, 3)

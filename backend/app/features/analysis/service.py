@@ -22,6 +22,28 @@ class JobManager:
         self.settings = settings
         self.root = Path(settings.analysis_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        # Hold an OS lock for the server lifetime. A second process must never
+        # mark another live worker's jobs as interrupted during startup recovery.
+        self.storage_lock = (self.root / ".worker.lock").open("a+b")
+        try:
+            self.storage_lock.seek(0, os.SEEK_END)
+            if not self.storage_lock.tell():
+                self.storage_lock.write(b"0")
+                self.storage_lock.flush()
+            self.storage_lock.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self.storage_lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.storage_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.storage_lock.close()
+            raise RuntimeError(
+                "Analysis storage is already owned by another server process"
+            ) from None
         self.slot = threading.BoundedSemaphore(1)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
         self.process: subprocess.Popen | None = None
@@ -98,6 +120,7 @@ class JobManager:
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             try:
                 self.process.wait(timeout=self.settings.analysis_timeout_seconds)
@@ -131,13 +154,17 @@ class JobManager:
             job.error = "Local analysis could not be completed"
         finally:
             job.elapsed_sec = round(time.monotonic() - started, 3)
-            atomic_json(directory / "job.json", job.model_dump_json())
             (directory / "input.mov").unlink(missing_ok=True)
             self.process = None
             self.slot.release()
+            # Publish a terminal status only once the next upload can be accepted.
+            # The executor is single-threaded, so a newly accepted job starts after
+            # this write completes.
+            atomic_json(directory / "job.json", job.model_dump_json())
 
     def close(self):
         self.stopping = True
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.storage_lock.close()
