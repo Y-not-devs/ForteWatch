@@ -343,18 +343,12 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
                         evidence.append(
                             EvidenceFrame(timestamp_sec=round(actual, 3), image_base64=jpeg(frame))
                         )
-                    verification_images = evidence_images
-                    if event.rule_id in {"cash_not_secured", "cashier_leaves_client"}:
-                        verification_images = [
-                            read_frame(capture, float(t), fps)
-                            for t in np.linspace(min(times), max(times), 9)
-                        ]
                     verified_at = time.monotonic()
                     confirmed = verify_event(
-                        client, url, model, verification_images, event.rule_id, deadline
+                        client, url, model, evidence_images, event.rule_id, deadline
                     )
                     diagnostic(directory, "verification", rule_id=event.rule_id,
-                               timecode_sec=timestamp, times=[t for t, _ in verification_images],
+                               timecode_sec=timestamp, times=[t for t, _ in evidence_images],
                                confirmed=confirmed, elapsed_sec=time.monotonic() - verified_at)
                     if not confirmed:
                         continue
