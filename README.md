@@ -9,7 +9,7 @@ This repository is the application scaffold. The current UI can upload and list 
 ## Stack
 
 - Backend: FastAPI, SQLAlchemy, Alembic
-- Frontend: React 19, TypeScript, Vite
+- Frontend: Vue 3, TypeScript, Vite
 - Local file storage for uploaded recordings
 - Docker Compose for running the app
 
