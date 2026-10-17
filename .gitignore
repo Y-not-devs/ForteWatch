@@ -44,7 +44,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
-TASK.md
 .markdownlint.json
-.vscode
 .ruff_cache
+TASK.md
