@@ -154,7 +154,8 @@ def test_subprocess_timeout_is_killed_and_reported(client, monkeypatch):
         ],
     ],
 )
-def test_real_decoder_evidence_and_done_api(client, tmp_path, monkeypatch, events):
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_real_decoder_evidence_and_done_api(client, tmp_path, monkeypatch, events, confirmed):
     directory = tmp_path / "local-worker"
     directory.mkdir()
     path = directory / "input.mov"
@@ -165,8 +166,9 @@ def test_real_decoder_evidence_and_done_api(client, tmp_path, monkeypatch, event
     writer.release()
     monkeypatch.setattr(worker, "check_local_model", lambda *_: None)
     monkeypatch.setattr(worker, "infer", lambda *_: events)
+    monkeypatch.setattr(worker, "verify_event", lambda *_: confirmed)
     result = worker.analyze(directory, "http://127.0.0.1:11434", "qwen3.5:4b", 10)
-    assert result.verdict == ("violation" if events else "no_violation")
+    assert result.verdict == ("violation" if events and confirmed else "no_violation")
     for violation in result.violations:
         assert len(violation.evidence_frames) == 3
         for frame in violation.evidence_frames:
@@ -286,3 +288,40 @@ def test_broken_mov_seek_index_uses_sequential_decode_and_real_pts():
 
     timestamp, frame = worker.read_frame(Capture(), 0.5, 10)
     assert timestamp == 0.5 and frame.shape == (10, 10, 3)
+
+
+def test_evidence_verifier_rejects_unconfirmed_candidate():
+    def transport(request):
+        return httpx.Response(200, json={"message": {"content": '{"confirmed":false}'}})
+
+    frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        assert not worker.verify_event(
+            client,
+            "http://127.0.0.1:11434",
+            "qwen3.5:4b",
+            frames,
+            "unattended_cash",
+            time.monotonic() + 10,
+        )
+
+
+def test_invalid_verification_fails_after_three_attempts():
+    attempts = []
+
+    def transport(request):
+        attempts.append(request)
+        return httpx.Response(200, json={"message": {"content": '{"confirmed":'}})
+
+    frames = [(0, np.zeros((180, 320, 3), dtype=np.uint8))] * 3
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        with pytest.raises(worker.AnalysisError, match="verifier returned invalid JSON"):
+            worker.verify_event(
+                client,
+                "http://127.0.0.1:11434",
+                "qwen3.5:4b",
+                frames,
+                "personal_items",
+                time.monotonic() + 10,
+            )
+    assert len(attempts) == 3

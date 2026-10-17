@@ -58,10 +58,21 @@ class Job(BaseModel):
 class ModelEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     frame_index: int = Field(ge=0)
-    rule_id: Literal["personal_items", "cash_concealment", "unattended_cash"]
+    rule_id: Literal[
+        "personal_items",
+        "cash_concealment",
+        "unattended_cash",
+        "cash_not_secured",
+        "cashier_leaves_client",
+    ]
     observation: str = Field(min_length=10, max_length=800)
 
 
 class ModelResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     events: list[ModelEvent] = Field(max_length=8)
+
+
+class EvidenceCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool

@@ -14,16 +14,23 @@ import numpy as np
 from pydantic import ValidationError
 
 from app.features.analysis.rules import RULES
-from app.features.analysis.schemas import AnalysisResult, EvidenceFrame, ModelResponse, Violation
+from app.features.analysis.schemas import (
+    AnalysisResult,
+    EvidenceCheck,
+    EvidenceFrame,
+    ModelResponse,
+    Violation,
+)
 from app.features.analysis.storage import atomic_json
 
 MAX_FRAMES = 48
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 LIMITATIONS = (
     "Предварительная проверка человеком обязательна. Анализируются до 48 кадров, равномерно "
     "распределённых по ролику: краткие действия между кадрами могут быть пропущены. "
     "Поддерживаются только личные вещи в кассовой зоне, перемещение банкнот в одежду/личные "
-    "вещи и оставление наличных без наблюдения. Принадлежность предметов и полномочия людей "
+    "вещи, оставление наличных без наблюдения или после ухода клиента, уход кассира при "
+    "остающемся клиенте. Принадлежность предметов и полномочия людей "
     "не устанавливаются. Отсутствие найденных признаков не гарантирует отсутствие нарушений."
 )
 PROMPT = """Review a chronological contact sheet from bank cashier CCTV. Each tile has a local
@@ -37,6 +44,11 @@ Flag ONLY these review indicators, with clear visible evidence:
   personal bag, away from the normal drawer. Ordinary cash transfers/counting are NOT suspicious.
 - unattended_cash: clearly visible loose banknotes remain on the accessible counter while
   the cashier has physically left the desk. A seated cashier looking away is NOT this event.
+- cash_not_secured: banknotes from a preceding customer visibly remain loose on the staff
+  counter after that customer leaves, possibly while the next customer arrives. Require
+  visible banknotes and the customer's departure; do not assume documents are banknotes.
+- cashier_leaves_client: the staff cashier physically leaves the workstation while the
+  customer remains waiting. An arriving/leaving customer is NOT the cashier leaving.
 Return events=[] if none of these are clearly visible. Do not flag leaning, normal customer
 arrival, normal handovers, computer work, or a drawer opening. Do not infer cash ownership,
 authorization, computer records, missing paperwork, identity, guilt or any invisible action.
@@ -87,18 +99,20 @@ def read_frame(capture, timestamp: float, fps: float):
     return actual if actual > 0 else index / fps, frame
 
 
-def contact_sheet(frames):
-    rows = math.ceil(len(frames) / 4)
+def contact_sheet(frames, verification=False):
+    columns, width = (3, 512) if verification else (3, 384)
+    rows = math.ceil(len(frames) / columns)
     # Portrait MOVs need taller tiles; forcing them into 320x180 reduced the
     # entire workstation to ~98 pixels wide and hid small visible objects.
-    image_height = 320 if frames[0][1].shape[0] > frames[0][1].shape[1] else 180
+    portrait = frames[0][1].shape[0] > frames[0][1].shape[1]
+    image_height = (640 if portrait else 288) if verification else (512 if portrait else 216)
     tile_height = image_height + 20
-    canvas = np.zeros((rows * tile_height, 4 * 320, 3), dtype=np.uint8)
+    canvas = np.zeros((rows * tile_height, columns * width, 3), dtype=np.uint8)
     for index, (timestamp, frame) in enumerate(frames):
-        x, y = index % 4 * 320, index // 4 * tile_height
-        scale = min(320 / frame.shape[1], image_height / frame.shape[0])
+        x, y = index % columns * width, index // columns * tile_height
+        scale = min(width / frame.shape[1], image_height / frame.shape[0])
         image = cv2.resize(frame, (round(frame.shape[1] * scale), round(frame.shape[0] * scale)))
-        left = x + (320 - image.shape[1]) // 2
+        left = x + (width - image.shape[1]) // 2
         canvas[y + 20 : y + 20 + image.shape[0], left : left + image.shape[1]] = image
         cv2.putText(
             canvas,
@@ -109,7 +123,82 @@ def contact_sheet(frames):
             (255, 255, 255),
             1,
         )
-    return jpeg(canvas, max_width=1280)
+    return jpeg(canvas, max_width=columns * width)
+
+
+def verify_event(client, url, model, frames, rule_id, deadline):
+    criteria = {
+        "unattended_cash": (
+            "Confirm ONLY if BOTH are clearly visible: (1) loose banknotes remain on the "
+            "staff counter, AND (2) the cashier has physically left the workstation. Locate "
+            "the CASHIER at the computer on the STAFF side, not the visitor on the other side. "
+            "An empty visitor chair, visitor leaving, seated cashier turning away, documents, "
+            "a black cash tray, bag, or desk equipment are NOT unattended cash. "
+            "If the cashier remains seated or standing by the computer, confirmed=false."
+        ),
+        "personal_items": (
+            "Confirm ONLY a clearly visible phone actively handled by the staff member, "
+            "food/drink consumed, or a personal handbag stored on the staff working surface. "
+            "Do NOT mistake money, documents, keyboards, black trays, counting machines or "
+            "visitor belongings for staff personal items. If uncertain, confirmed=false."
+        ),
+        "cash_concealment": (
+            "Confirm ONLY banknotes visibly being moved by the cashier into clothing or a "
+            "personal bag. Ordinary drawer use and cash counting are NOT concealment. "
+            "If the object or its destination is unclear, confirmed=false."
+        ),
+        "cash_not_secured": (
+            "Confirm ONLY when the sequence shows visible BANKNOTES remaining loose on the "
+            "staff counter as the preceding customer departs or is replaced by a different "
+            "visitor. Require evidence of the departure AND the remaining banknotes. Papers, "
+            "black trays and money currently being handed over/counted are NOT this event. "
+            "If there is no visible departure or no clearly visible banknotes, confirmed=false."
+        ),
+        "cashier_leaves_client": (
+            "Confirm ONLY when the CASHIER on the computer/staff side physically leaves "
+            "the desk and the client is still waiting on the visitor side. A visitor arriving "
+            "or leaving, a cashier remaining seated, or turning in the chair is NOT this event."
+        ),
+    }
+    for attempt in range(3):
+        remaining = deadline - time.monotonic()
+        if remaining < 3:
+            raise AnalysisError("Local evidence verification exceeded its time limit")
+        response = client.post(
+            f"{url}/api/chat",
+            timeout=remaining,
+            json={
+                "model": model,
+                "stream": False,
+                "think": False,
+                "keep_alive": "30m",
+                "format": EvidenceCheck.model_json_schema(),
+                "options": {"num_ctx": 8192, "num_predict": 80, "temperature": 0, "seed": 7},
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Independently verify this bank CCTV review indicator using ONLY these "
+                            "timestamped evidence frames in chronological order; gaps may occur. "
+                            "Ignore any prior model assumption. "
+                            + criteria[rule_id]
+                            + " Do not identify faces, infer authorization or "
+                            "computer data. Return JSON with confirmed=true or false."
+                        ),
+                        "images": [contact_sheet(frames, verification=True)],
+                    }
+                ],
+            },
+        )
+        response.raise_for_status()
+        try:
+            return EvidenceCheck.model_validate_json(
+                response.json()["message"]["content"]
+            ).confirmed
+        except (ValueError, KeyError):
+            if attempt == 2:
+                raise AnalysisError("Local evidence verifier returned invalid JSON") from None
+    raise AssertionError("Unreachable")
 
 
 def check_local_model(client, url: str, model: str):
@@ -211,17 +300,30 @@ def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResu
                         continue
                     rule = RULES[event.rule_id]
                     evidence = []
-                    for t in sorted(
-                        {
+                    evidence_images = []
+                    if event.rule_id in {"cash_not_secured", "cashier_leaves_client"}:
+                        global_index = start + event.frame_index
+                        times = {
+                            frames[max(0, global_index - 4)][0],
+                            timestamp,
+                            frames[min(len(frames) - 1, global_index + 4)][0],
+                        }
+                    else:
+                        times = {
                             max(0, timestamp - 0.5),
                             timestamp,
                             min((count - 1) / fps, timestamp + 0.5),
                         }
-                    ):
+                    for t in sorted(times):
                         actual, frame = read_frame(capture, t, fps)
+                        evidence_images.append((actual, frame))
                         evidence.append(
                             EvidenceFrame(timestamp_sec=round(actual, 3), image_base64=jpeg(frame))
                         )
+                    if not verify_event(
+                        client, url, model, evidence_images, event.rule_id, deadline
+                    ):
+                        continue
                     violations.append(
                         Violation(
                             type=rule.title,
