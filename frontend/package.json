@@ -7,8 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test"
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "lucide-vue-next": "^0.468.0",
