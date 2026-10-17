@@ -11,7 +11,8 @@ The initial detector covers five visual review indicators; see the measured qual
 limitations rather than treating a clean result as a guarantee.
 
 See [setup, API and assumptions](docs/analyze-api.md) and the
-[real-video evaluation](docs/evaluation.md).
+[real-video evaluation](docs/evaluation.md). For a short presentation checklist, see the
+[demo runbook](docs/demo-runbook.md).
 
 ## Stack
 

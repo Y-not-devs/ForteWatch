@@ -27,6 +27,6 @@ export const analysisApi = {
     })
   },
   get(id: string, key: string, signal?: AbortSignal) {
-    return request<AnalysisJob>(`/v1/jobs/${id}`, { headers: { 'X-API-Key': key }, signal })
+    return request<AnalysisJob>(`/v1/jobs/${encodeURIComponent(id)}`, { headers: { 'X-API-Key': key }, signal })
   },
 }
