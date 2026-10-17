@@ -21,6 +21,9 @@ class Meta(BaseModel):
 
 def build_api_router(settings: Settings) -> APIRouter:
     api = APIRouter()
+    from app.features.analysis.router import router as analysis_router
+
+    api.include_router(analysis_router)
 
     @api.get("/health", tags=["system"])
     def health(db: DbSession):

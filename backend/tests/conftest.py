@@ -22,7 +22,13 @@ from app.main import create_app  # noqa: E402
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ANALYSIS_API_KEY", "test-key-not-a-real-credential")
+    monkeypatch.setenv("ANALYSIS_DIR", str(tmp_path / "analysis"))
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    get_settings.cache_clear()
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -39,3 +45,4 @@ def client():
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(engine)
+    get_settings.cache_clear()

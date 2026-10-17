@@ -1,0 +1,241 @@
+"""Isolated, killable local inference process. No dataset/labels access or cloud fallback."""
+
+import base64
+import json
+import math
+import sys
+import time
+from pathlib import Path
+from urllib.parse import urlparse
+
+import cv2
+import httpx
+import numpy as np
+
+from app.features.analysis.rules import RULES
+from app.features.analysis.schemas import AnalysisResult, EvidenceFrame, ModelResponse, Violation
+from app.features.analysis.storage import atomic_json
+
+MAX_FRAMES = 48
+BATCH_SIZE = 16
+LIMITATIONS = (
+    "Предварительная проверка человеком обязательна. Анализируются до 48 кадров, равномерно "
+    "распределённых по ролику: краткие действия между кадрами могут быть пропущены. "
+    "Поддерживаются только личные вещи в кассовой зоне, перемещение банкнот в одежду/личные "
+    "вещи и оставление наличных без наблюдения. Принадлежность предметов и полномочия людей "
+    "не устанавливаются. Отсутствие найденных признаков не гарантирует отсутствие нарушений."
+)
+PROMPT = """Review a chronological contact sheet from bank cashier CCTV. Each tile has a local
+frame_index F0, F1, etc and the time in seconds. Cashier is the person at the computer on the
+staff side of the counter; visitors are on the opposite side. Observe actions, not identities.
+Flag ONLY these review indicators, with clear visible evidence:
+- personal_items: cashier visibly handles a mobile phone, eats/drinks, or stores a personal
+  handbag/backpack on the staff working surface. Bank equipment, cash counting machines,
+  documents, visitor belongings and merely touching a face are NOT personal_items.
+- cash_concealment: clearly visible banknotes are moved by the cashier into clothing or a
+  personal bag, away from the normal drawer. Ordinary cash transfers/counting are NOT suspicious.
+- unattended_cash: clearly visible loose banknotes remain on the accessible counter while
+  the cashier has physically left the desk. A seated cashier looking away is NOT this event.
+Return events=[] if none of these are clearly visible. Do not flag leaning, normal customer
+arrival, normal handovers, computer work, or a drawer opening. Do not infer cash ownership,
+authorization, computer records, missing paperwork, identity, guilt or any invisible action.
+For each DISTINCT episode choose the clearest tile's frame_index and one rule_id.
+Describe exactly the visible object, location and action, with cautious language. Do not
+invent rules or timestamps. Multiple different indicators are allowed. Output only JSON.
+"""
+
+
+class AnalysisError(Exception):
+    pass
+
+
+def progress(directory: Path, value: int, stage: str):
+    atomic_json(directory / "progress.json", json.dumps({"progress": value, "stage": stage}))
+
+
+def jpeg(frame: np.ndarray, max_width: int = 960) -> str:
+    if frame.shape[1] > max_width:
+        frame = cv2.resize(frame, (max_width, round(frame.shape[0] * max_width / frame.shape[1])))
+    ok, data = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ok:
+        raise AnalysisError("Could not encode evidence frame")
+    return base64.b64encode(data).decode("ascii")
+
+
+def read_frame(capture, timestamp: float, fps: float):
+    index = round(timestamp * fps)
+    # MOV variable-frame-rate indexes can seek just past the last decodable packet,
+    # even when a sequential read succeeds. Try nearby earlier frames and report
+    # the decoder's actual PTS, never the requested timestamp as fabricated evidence.
+    for offset in range(3):
+        target = max(0, index - offset)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ok, frame = capture.read()
+        if ok and frame is not None:
+            actual = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+            return actual if actual > 0 else target / fps, frame
+    raise AnalysisError("Video contains an unreadable frame")
+
+
+def contact_sheet(frames):
+    rows = math.ceil(len(frames) / 4)
+    canvas = np.zeros((rows * 200, 4 * 320, 3), dtype=np.uint8)
+    for index, (timestamp, frame) in enumerate(frames):
+        x, y = index % 4 * 320, index // 4 * 200
+        scale = min(320 / frame.shape[1], 180 / frame.shape[0])
+        image = cv2.resize(frame, (round(frame.shape[1] * scale), round(frame.shape[0] * scale)))
+        left = x + (320 - image.shape[1]) // 2
+        canvas[y + 20 : y + 20 + image.shape[0], left : left + image.shape[1]] = image
+        cv2.putText(
+            canvas,
+            f"F{index}  {timestamp:.2f}s",
+            (x + 4, y + 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+        )
+    return jpeg(canvas, max_width=1280)
+
+
+def check_local_model(client, url: str, model: str):
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.path not in {"", "/"}
+    ):
+        raise AnalysisError("Only a loopback HTTP Ollama server is permitted")
+    if "cloud" in model.lower() or "/" in model:
+        raise AnalysisError("Only a locally installed model is permitted")
+    tags = client.get(f"{url}/api/tags", timeout=5)
+    tags.raise_for_status()
+    if model not in {item["name"] for item in tags.json()["models"]}:
+        raise AnalysisError("Local model is missing. Install the documented model before analysis.")
+    response = client.post(f"{url}/api/show", json={"model": model}, timeout=10)
+    response.raise_for_status()
+    details = response.json()
+    if details.get("remote_model") or details.get("remote_host"):
+        raise AnalysisError("Remote model execution is forbidden")
+    if "vision" not in details.get("capabilities", []):
+        raise AnalysisError("Configured local model does not support images")
+
+
+def infer(client, url, model, frames, deadline):
+    image = contact_sheet(frames)
+    for attempt in range(3):
+        remaining = deadline - time.monotonic()
+        if remaining < 3:
+            raise AnalysisError("Local inference exceeded its processing time limit")
+        response = client.post(
+            f"{url}/api/chat",
+            timeout=remaining,
+            json={
+                "model": model,
+                "stream": False,
+                "think": False,
+                "keep_alive": "30m",
+                "format": ModelResponse.model_json_schema(),
+                "options": {"num_ctx": 4096, "num_predict": 650, "temperature": 0, "seed": 7},
+                "messages": [{"role": "user", "content": PROMPT, "images": [image]}],
+            },
+        )
+        response.raise_for_status()
+        try:
+            result = ModelResponse.model_validate_json(response.json()["message"]["content"])
+            if any(event.frame_index >= len(frames) for event in result.events):
+                raise ValueError("Model referred to a non-existent frame")
+            return result.events
+        except (ValueError, KeyError):
+            if attempt == 2:
+                raise AnalysisError("Local model returned an invalid structured result") from None
+    raise AssertionError("Unreachable")
+
+
+def analyze(directory: Path, url: str, model: str, timeout: int) -> AnalysisResult:
+    deadline = time.monotonic() + timeout - 2
+    cv2.setNumThreads(2)
+    capture = cv2.VideoCapture(str(directory / "input.mov"))
+    try:
+        fps, count = capture.get(cv2.CAP_PROP_FPS), capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        if not capture.isOpened() or not math.isfinite(fps) or fps <= 0 or count < 1:
+            raise AnalysisError("File is not a readable video")
+        duration = count / fps
+        if not math.isfinite(duration) or duration <= 0:
+            raise AnalysisError("Video duration is invalid")
+        progress(directory, 5, "reading_video")
+        sample_count = min(MAX_FRAMES, max(2, math.ceil(duration) + 1))
+        frames = [
+            read_frame(capture, float(t), fps)
+            for t in np.linspace(0, max(0, (count - 1) / fps), sample_count)
+        ]
+        violations = []
+        with httpx.Client(trust_env=False, follow_redirects=False) as client:
+            check_local_model(client, url, model)
+            for start in range(0, len(frames), BATCH_SIZE):
+                batch = frames[start : start + BATCH_SIZE]
+                progress(directory, 10 + round(75 * start / len(frames)), "local_inference")
+                for event in infer(client, url, model, batch, deadline):
+                    timestamp = round(batch[event.frame_index][0], 3)
+                    if any(
+                        v.rule.id == event.rule_id and abs(v.timecode_sec - timestamp) < 6
+                        for v in violations
+                    ):
+                        continue
+                    rule = RULES[event.rule_id]
+                    evidence = []
+                    for t in sorted(
+                        {
+                            max(0, timestamp - 0.5),
+                            timestamp,
+                            min((count - 1) / fps, timestamp + 0.5),
+                        }
+                    ):
+                        actual, frame = read_frame(capture, t, fps)
+                        evidence.append(
+                            EvidenceFrame(timestamp_sec=round(actual, 3), image_base64=jpeg(frame))
+                        )
+                    violations.append(
+                        Violation(
+                            type=rule.title,
+                            timecode_sec=timestamp,
+                            description=event.observation,
+                            evidence_frames=evidence,
+                            rule=rule,
+                        )
+                    )
+        progress(directory, 95, "preparing_evidence")
+        return AnalysisResult(
+            verdict="violation" if violations else "no_violation",
+            violations=sorted(violations, key=lambda v: v.timecode_sec),
+            model=model,
+            sampled_frames=len(frames),
+            duration_sec=round(duration, 3),
+            limitations=LIMITATIONS,
+        )
+    finally:
+        capture.release()
+
+
+if __name__ == "__main__":
+    directory = Path(sys.argv[1])
+    try:
+        result = analyze(directory, sys.argv[2].rstrip("/"), sys.argv[3], int(sys.argv[4]))
+        atomic_json(directory / "result.json", result.model_dump_json())
+    except AnalysisError as exc:
+        atomic_json(directory / "error.json", json.dumps({"error": str(exc)}))
+        sys.exit(1)
+    except httpx.TimeoutException:
+        atomic_json(directory / "error.json", json.dumps({"error": "Local model timed out"}))
+        sys.exit(1)
+    except httpx.HTTPError:
+        atomic_json(
+            directory / "error.json", json.dumps({"error": "Local model server unavailable"})
+        )
+        sys.exit(1)
+    except Exception:
+        atomic_json(directory / "error.json", json.dumps({"error": "Local video analysis failed"}))
+        sys.exit(1)

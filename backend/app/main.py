@@ -1,6 +1,7 @@
 """Точка входа: uvicorn app.main:app --reload"""
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -19,7 +20,18 @@ def create_app() -> FastAPI:
     settings = get_settings()
     prefix = settings.api_prefix
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        from app.features.analysis.service import JobManager
+
+        app.state.analysis = JobManager(settings)
+        try:
+            yield
+        finally:
+            app.state.analysis.close()
+
     app = FastAPI(
+        lifespan=lifespan,
         title=settings.app_name,
         version="0.1.0",
         docs_url=f"{prefix}/docs",
