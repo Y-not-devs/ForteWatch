@@ -1,186 +1,69 @@
-# Local video analysis
+# Документация API и локального видеоанализатора
 
-ForteWatch accepts MOV recordings and runs Qwen3.5-4B locally through Ollama. The same
-upload/job endpoints serve the UI and jury. Existing `/api/health`, `/api/meta`, auth,
-`/api/uploads` and `/uploads/...` behavior is preserved. The original upload UI remains
-available at `/uploads`; the home page now shows analysis.
+ForteWatch принимает видеозаписи в формате `.mov` и выполняет полностью локальный анализ с помощью мультимодальной модели `Qwen3.5-4B` через Ollama. Одни и те же эндпоинты `/api/v1/analyze` и `/api/v1/jobs/{job_id}` используются как веб-интерфейсом, так и тестовой системой жюри.
 
-## Run
+## Запуск
 
-Requires Python 3.11+, Node 20.19+, Git and a running local Ollama server. The measured
-hardware is an RTX 3050 Laptop GPU (6 GB VRAM) and 16 GB RAM. Use one Uvicorn worker.
-The five-minute processing target is validated on this machine, not arbitrary CPU-only hosts.
+Требования: **Node.js 20.19+**, **Python 3.11+**, **Git** и установленный локально **Ollama**. Целевое время обработки (до 5 минут на ролик) проверено на ноутбучной видеокарте **RTX 3050 Laptop GPU (6 GB VRAM)** и 16 GB ОЗУ.
 
-From the repository root:
+Запуск одной командой из корня репозитория:
 
-```sh
-npm run setup
-python scripts/init_analysis.py
-node scripts/py.mjs ../scripts/prepare_model.py
-npm run dev
-```
-
-Start Ollama before the preparation command. Preparation downloads missing weights once;
-the already-installed model is reused. No model download occurs when a video is uploaded.
-After preparation the service processes videos without internet access. Open
-`http://localhost:5173`, enter the project-only `ANALYSIS_API_KEY` from your local `.env`,
-choose a MOV recording and click **Запустить анализ**. No account registration is needed.
-The UI keeps the key only in memory. It must never be put in a `VITE_*` variable.
-The result includes a player backed by the selected local file and buttons that seek to
-event timestamps. The browser releases the file URL when another recording is submitted
-or the page is closed. If the browser cannot decode the MOV codec, evidence JPEGs remain
-available and the seek buttons are disabled; playback support is separate from API decoding.
-
-For a single-port production-style local run:
-
-```sh
+```bash
 npm start
 ```
 
-Open `http://localhost:8000`. This builds and serves the frontend from FastAPI. A publicly
-reachable jury deployment additionally needs the team's host and HTTPS reverse proxy;
-this PR does not provision hosting or a public URL. Keep Ollama's port private.
+Команда автоматически проверит и при необходимости создаст `.env` и виртуальное окружение Python, сгенерирует ключи доступа (`scripts/init_analysis.py`), запустит локальный сервер Ollama, проверит наличие модели `qwen3.5:4b` (`scripts/prepare_model.py`), выполнит миграции БД, соберёт фронтенд и поднимет сервер на `http://localhost:8000`.
 
-## API contract
+Для режима разработки с автоматической перезагрузкой:
 
-Both endpoints require `X-API-Key`. An unset server key fails closed with 503; a missing
-or incorrect client key returns 401. Credentials are generated independently of other projects.
-
-`POST /api/v1/analyze`, multipart field `file`: case-insensitive `.mov`, up to the configured
-`MAX_UPLOAD_MB` (default 512). Returns 202 with `job_id` and `status: processing` immediately
-after storage. Empty files return 422, other extensions 415, oversize uploads 413.
-Invalid video content becomes a terminal `failed` job with a readable error.
-
-`GET /api/v1/jobs/{job_id}` returns `processing`, `done` or `failed`. Unknown IDs return 404.
-Progress is based on completed inference batches, not an estimated countdown. A done job
-contains `verdict: violation | no_violation`, `violations`, processing duration and limitations.
-Each violation includes `type`, `timecode_sec`, `description`, 1–3 JPEG `evidence_frames`
-(`timestamp_sec`, `image_base64`) and a `rule` with document, section, URL and rationale.
-No-verdict responses for processing/failed jobs must not be treated as clean videos.
-
-```sh
-curl -X POST http://localhost:8000/api/v1/analyze \
-  -H "X-API-Key: <your-local-key>" -F "file=@recording.mov"
-curl http://localhost:8000/api/v1/jobs/<job_id> -H "X-API-Key: <your-local-key>"
+```bash
+npm run dev
 ```
 
-Only one GPU job is accepted at a time. A concurrent upload returns 429 with `Retry-After`;
-there is no unbounded queue consuming the five-minute budget. The processing deadline
-defaults to 280 seconds, leaving headroom for upload and response. A timed-out worker is
-killed. Job metadata/evidence are stored atomically under private `backend/data/analysis`,
-outside the public uploads mount. Input videos are deleted after terminal processing. A
-server restart preserves terminal results and marks interrupted jobs `failed`; upload again
-to retry. An OS lock prevents two servers from corrupting the same job store.
+После подготовки модели сервис обрабатывает видеозаписи полностью автономно и не требует доступа в интернет.
 
-## Analyzer and source mapping
+## Контракт API
 
-The worker samples up to 48 frames uniformly across the **entire** clip, including its end.
-Groups of up to 8 timestamped tiles are passed to the local vision model. Structured output
-uses frame indexes, which the server maps back to actual decoder timestamps. Evidence JPEGs
-come from the original decoded video, not from generated imagery. VFR MOV seek failures at
-EOF fall back up to two frames or a sequential decode, reporting the actual timestamp. Malformed
-model results are retried up to three times; failures are not converted into clean verdicts.
-Each candidate is independently checked by the local model again on larger evidence frames
-before publication, to reduce false alarms caused by small contact-sheet tiles. Temporal rules
-use more widely spaced before/after frames to retain the customer/staff departure context.
+Оба эндпоинта требуют заголовок `X-API-Key`. Если ключ на сервере не сконфигурирован, сервис возвращает `503 Service Unavailable`; при отсутствии или несовпадении клиентского ключа — `401 Unauthorized`.
 
-The initial detector supports five visual review indicators:
+- `POST /api/v1/analyze` — multipart-поле `file`: расширение `.mov` (без учёта регистра), размер до `MAX_UPLOAD_MB` (по умолчанию 512 МБ). Сразу после сохранения файла возвращает `202 Accepted` с `job_id` и `status: "processing"`. Пустой файл возвращает `422`, неподдерживаемое расширение — `415`, превышение лимита размера — `413`. Повреждённое содержимое видео переводит задачу в финальный статус `failed` с описанием причины.
+- `GET /api/v1/jobs/{job_id}` — возвращает статус `processing`, `done` или `failed`. Неизвестный `job_id` возвращает `404`. Прогресс (`progress`) рассчитывается по реально выполненным батчам инференса. Завершённая задача (`done`) содержит `verdict: "violation" | "no_violation"`, массив `violations`, длительность ролика и описание ограничений. Каждое нарушение включает `type`, `timecode_sec`, `description`, от 1 до 3 JPEG-кадров в `evidence_frames` (`timestamp_sec`, `image_base64`) и объект `rule` с названием документа, пунктом, ссылкой и обоснованием.
 
-| Indicator | Source | Scope |
-| --- | --- | --- |
-| Personal items in staff cash workspace | NBK resolution 231, chapter 2, paragraph 1, clause 12 | Visible phone, food/drink or personal bag; ownership and formal workspace boundaries need human review |
-| Banknotes moved into clothing/personal belongings | Chapter 2, clause 3(7), clause 14 | A review indicator, not proof of theft |
-| Loose cash left when cashier leaves | Chapter 2, clause 3(7) | General safekeeping requirement, not a fabricated specific unattended-desk prohibition |
-| Cash remains on the desk after the customer leaves | Chapter 2, paragraph 2, clause 20 | Customer departure and loose banknotes must both be visible; completion of the bank transaction needs human confirmation |
-| Cashier leaves while a client remains | Chapter 2, paragraph 2, clause 22 | The staff member, not merely a visitor, must leave the workstation |
+```bash
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "X-API-Key: <ANALYSIS_API_KEY>" -F "file=@recording.mov"
 
-Official act: <https://adilet.zan.kz/rus/docs/V1900019680>.
-The clause wording was checked against the original official publication of resolution 231:
-<https://kazpravda.kz/uploads/redactors/files/5e2ed7157da541580128021.pdf>.
-The Adilet page serves the consolidated text; a human should check applicability and amendments.
-The model cannot invent a legal reference: only IDs from this reviewed catalog are accepted.
-Normative sources are bundled in code; inference never fetches external websites.
+curl http://localhost:8000/api/v1/jobs/<job_id> \
+  -H "X-API-Key: <ANALYSIS_API_KEY>"
+```
 
-Qwen model/license: <https://huggingface.co/Qwen/Qwen3.5-4B> (Apache-2.0).
-Runtime API: <https://docs.ollama.com/api/chat>. Remote URLs, cloud model names and models
-declaring a remote backend are rejected. HTTP clients ignore proxy environment variables
-and do not follow redirects. No face recognition, identity extraction or audio analysis is used.
+Одновременно выполняется только одна GPU-задача. Параллельный запрос во время активного анализа получает `429 Too Many Requests` с заголовком `Retry-After: 10`. Жёсткий таймаут воркера составляет 280 секунд (при лимите жюри 300 секунд). Исходный видеофайл удаляется сразу после завершения обработки.
 
-## Verification
+## Логика анализа и нормативная база
 
-```sh
+1. Воркер равномерно сэмплирует до 48 кадров по всей длине видеоролика, включая его конец.
+2. Группы до 8 кадров с таймкодами объединяются в контакт-лист и передаются локальной VLM-модели `Qwen3.5-4B`.
+3. Для каждого найденного кандидата извлекаются 3 кадра доказательства в повышенном разрешении (`512px`) из исходного видеопотока, после чего выполняется независимая повторная верификация моделью для фильтрации ложных срабатываний.
+4. Все нормативные ссылки жёстко зафиксированы в `backend/app/features/analysis/rules.py` и опираются на **Постановление Правления НБРК от 29.11.2019 № 231** (<https://adilet.zan.kz/rus/docs/V1900019680>):
+
+| Код индикатора | Источник | Область применения |
+| :--- | :--- | :--- |
+| `personal_items` | Постановление НБРК № 231, глава 2, параграф 1, пункт 12 | Видимый телефон, еда/напитки или личная сумка в рабочей зоне кассира |
+| `cash_concealment` | Глава 2, пункт 3, подпункт 7; пункт 14 | Перемещение банкнот кассиром в одежду или личную сумку |
+| `unattended_cash` | Глава 2, пункт 3, подпункт 7 | Наличные оставлены на открытой поверхности при уходе кассира |
+| `cash_not_secured` | Глава 2, параграф 2, пункт 20 | Наличные остаются на столе после ухода клиента |
+| `cashier_leaves_client` | Глава 2, параграф 2, пункт 22 | Кассир покидает рабочее место, пока клиент остаётся у кассы |
+
+## Проверка и валидация
+
+```bash
 npm test
 npm run lint
 npm run build
-cd frontend
-npx playwright install chromium
-npm run test:e2e
 ```
 
-The browser tests expect the built app already running at port 8000; override with
-`TEST_BASE_URL` if needed. They deterministically cover progress, both terminal statuses,
-evidence/source rendering and invalid-key errors with mocked API responses. The actual
-video pipeline is exercised separately over real HTTP, with no inference mock:
+Для полного прогона по архиву `open.zip` через HTTP API:
 
-```sh
+```bash
 node scripts/py.mjs ../scripts/evaluate_dataset.py --archive /path/to/open.zip
 ```
-
-The evaluator submits all 42 archive videos under the neutral filename `recording.mov`,
-polls each for at most 300 seconds, validates response schemas, decodes **every** evidence
-JPEG and compares against `open_labels.xlsx` (22 positive and 20 negative labels). It reports
-TP/TN/FP/FN, failures, accuracy, precision, end-to-end recall and F1. Failed positive videos
-count against recall; failed jobs are reported separately from completed negative verdicts.
-Russian timestamps such as `1минута 8 секунда` are parsed strictly, and Cyrillic/Latin X names
-are normalized. Unknown labels, malformed timestamps and duplicate label keys abort the run.
-
-For each positive video with predictions, localization uses the distance from the single
-annotated timestamp to the nearest predicted timestamp, without a distance cutoff. MAE covers
-only those videos; misses have no finite localization error and remain visible in recall.
-The count within 2 seconds uses **all** positive videos as its denominator; 2 seconds is a
-diagnostic threshold, not a supplied judging tolerance. Types are not annotated: proximity
-does not establish a semantic match, and extra predictions cannot be scored as event FP from
-these labels alone. The two byte-duplicate pairs are still counted independently, and one
-positive duplicate pair has different annotated timestamps. These are development metrics,
-not held-out accuracy or an estimate of performance at an unseen camera angle.
-
-It writes private job metrics to `backend/data/validation` and a key/frame-free table to
-`docs/evaluation.md`. Diagnostic `--only`/`--limit` runs write `subset_metrics.json` and never
-overwrite the complete metrics or report. Each full run records worker and combined pipeline
-hashes, and aborts if the worker, rules, schemas, service or storage change during evaluation.
-A busy response aborts the run before it can publish an incomplete full report. Temporary
-Windows locks on the optional progress snapshot leave the job in `processing`; the next
-poll reads progress again.
-An analysis failure or timeout makes the evaluator exit nonzero.
-Run without other active analysis clients.
-
-One actual browser upload (no mocked responses):
-
-```sh
-node scripts/check_real_ui.mjs /path/to/recording.mov
-```
-
-This checks the real pipeline, rendered evidence JPEGs and regulatory links. It reads the
-local key at the transport boundary to prevent browser snapshots from retaining credentials.
-
-## Assumptions and limitations
-
-- This is a local VLM baseline covering the five indicators above, not an exhaustive
-  classifier for every possible regulation or every labeled event. False positives and
-  missed violations are measured in the report; a completed HTTP job does not imply accuracy.
-- Uniform sampling can miss brief actions. Small objects, occlusion, unusual camera angles
-  and actions outside the supported catalog can produce errors. No bank-system or document
-  contents, authorization, cash amount, criminal intent or cash ownership is inferred.
-- Supplied labels have a verdict/timecode but no violation categories. They are used only
-  by the evaluator, never loaded by the worker or used as a lookup table. The original
-  filename is not passed to the worker. No training is performed.
-- The development archive contains two exact duplicate pairs (4/47 and 5/48), verified by
-  SHA-256; the requested 42-row evaluation includes both entries. Agreement is not a
-  held-out or unseen-angle generalization estimate.
-- A single API key protects analysis access for the team/jury. The UI asks for it because
-  embedding it in public JavaScript would defeat API authentication.
-- Development and production-style native runs are verified here. The original Docker
-  scaffold does not provision a colocated Ollama runtime; configure that before container deployment.
-- Runtime videos, evidence, model weights, `.env` and test artifacts are excluded from Git.
-  Before **every** commit run `node scripts/py.mjs ../scripts/check_staged_secrets.py` and
-  `git diff --cached --check`. The scanner checks the exact staged diff without printing keys.

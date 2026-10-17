@@ -1,10 +1,42 @@
 services:
+  # Fully local inference server (no cloud AI). The app joins its network namespace,
+  # so the worker's loopback-only guard (http://127.0.0.1:11434) keeps working unchanged.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Named volume by default; set OLLAMA_MODELS_DIR in .env to reuse weights already
+      # downloaded on the host (e.g. C:/Users/<you>/.ollama) and skip the ~3.4 GB pull.
+      - ${OLLAMA_MODELS_DIR:-ollama_data}:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  model-init:
+    image: ollama/ollama:latest
+    network_mode: "service:ollama"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=127.0.0.1:11434
+    entrypoint: ["ollama", "pull", "${ANALYSIS_MODEL:-qwen3.5:4b}"]
+    restart: "no"
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "${API_PORT:-8000}:8000"
+    network_mode: "service:ollama"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      model-init:
+        condition: service_completed_successfully
     environment:
       - ENVIRONMENT=prod
       - APP_NAME=${APP_NAME:-ForteWatch}
@@ -13,25 +45,13 @@ services:
       - ENABLE_UPLOADS=${ENABLE_UPLOADS:-false}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-change-me-please-32-bytes-min}
       - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-512}
+      - ANALYSIS_API_KEY=${ANALYSIS_API_KEY:-fortewatch-local-key}
+      - OLLAMA_URL=http://127.0.0.1:11434
+      - ANALYSIS_MODEL=${ANALYSIS_MODEL:-qwen3.5:4b}
+      - ANALYSIS_TIMEOUT_SECONDS=${ANALYSIS_TIMEOUT_SECONDS:-280}
     volumes:
       - ./backend/data:/app/backend/data
     restart: unless-stopped
 
-  # Опциональный PostgreSQL для проектов, требующих реляционную СУБД:
-  # Чтобы включить: раскомментируйте блок ниже и укажите DATABASE_URL в .env:
-  # DATABASE_URL=postgresql+psycopg://app:app@db:5432/app
-  #
-  # db:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_USER: app
-  #     POSTGRES_PASSWORD: app
-  #     POSTGRES_DB: app
-  #   volumes:
-  #     - pgdata:/var/lib/postgresql/data
-  #   ports:
-  #     - "5432:5432"
-  #   restart: unless-stopped
-
-# volumes:
-#   pgdata:
+volumes:
+  ollama_data:

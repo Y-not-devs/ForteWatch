@@ -24,10 +24,9 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
           <nav className="app-nav">
             <a href="/" className="app-nav__item">Анализ видео</a>
-            <a href="/uploads" className="app-nav__item">Загруженные записи</a>
             <a href="/api/docs" target="_blank" rel="noreferrer" className="app-nav__item">
               <ExternalLink size={18} />
-              <span className="grow">API docs</span>
+              <span className="grow">API docs (Swagger)</span>
             </a>
           </nav>
         </div>

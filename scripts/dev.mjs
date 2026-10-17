@@ -1,31 +1,43 @@
-// npm run dev        — бэкенд + фронтенд одной командой
+// npm run dev        — авто-настройка + Ollama + бэкенд + фронтенд одной командой
+// npm start          — авто-настройка + Ollama + сборка фронта + единый сервер на :8000
 // npm run dev:api    — только бэкенд
 // npm run dev:web    — только фронтенд
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  BACKEND, FRONTEND, backendPython, backendReady, childEnv, color, isWin, killTree, loadEnv, runPython,
+  BACKEND, FRONTEND, ROOT, backendPython, backendReady, childEnv, color,
+  ensureOllamaAndModel, isWin, killTree, loadEnv, run, runNpm, runPython,
 } from './lib.mjs'
 
-loadEnv()
-const only = process.argv[2] // 'api' | 'web' | undefined
+const mode = process.argv[2] // 'api' | 'web' | 'prod' | undefined
+
+const needsBackend = mode !== 'web'
+const needsFrontend = mode !== 'api'
+if (
+  !existsSync(join(ROOT, '.env')) ||
+  (needsBackend && !backendReady()) ||
+  (needsFrontend && !existsSync(join(FRONTEND, 'node_modules')))
+) {
+  console.log(color.cyan('▸ Первичный запуск: автоматическая установка окружения (setup)...'))
+  const code = await run(process.execPath, [join(ROOT, 'scripts', 'setup.mjs')], { cwd: ROOT })
+  if (code !== 0) process.exit(code)
+}
+
+loadEnv(true)
+
+if (needsBackend && (!process.env.ANALYSIS_API_KEY || !process.env.SECRET_KEY)) {
+  await runPython([join(ROOT, 'scripts', 'init_analysis.py')])
+  loadEnv(true)
+}
+
 const apiPort = process.env.API_PORT || '8000'
 const webPort = process.env.WEB_PORT || '5173'
-
-if (only !== 'web' && !backendReady()) {
-  console.error(color.red('Окружение бэкенда не найдено. Сначала выполните: npm run setup'))
-  process.exit(1)
-}
-if (only !== 'api' && !existsSync(join(FRONTEND, 'node_modules'))) {
-  console.error(color.red('Нет frontend/node_modules. Сначала выполните: npm run setup'))
-  process.exit(1)
-}
 
 const children = []
 
 function start(name, paint, cmd, args, opts) {
-  const child = spawn(cmd, args, { ...opts, env: childEnv({ FORCE_COLOR: '1' }) })
+  const child = spawn(cmd, args, { ...opts, windowsHide: true, env: childEnv({ FORCE_COLOR: '1' }) })
   const tag = paint(`[${name}]`)
   const pipe = (stream, out) => {
     let buf = ''
@@ -55,20 +67,40 @@ function shutdown(code = 0) {
 process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
 
-if (only !== 'web') {
-  // Миграции перед стартом — товарищ по команде мог добавить новую.
+if (needsBackend) {
+  await ensureOllamaAndModel()
   if ((await runPython(['-m', 'alembic', 'upgrade', 'head'])) !== 0) {
     console.error(color.red('Миграции не применились — проверьте DATABASE_URL и backend/migrations'))
     process.exit(1)
   }
-  const py = backendPython(['-m', 'uvicorn', 'app.main:app', '--reload', '--host', '127.0.0.1', '--port', apiPort])
-  start('api', color.cyan, py.cmd, py.args, { cwd: BACKEND })
-}
-if (only !== 'api') {
-  start('web', color.magenta, 'npm', ['run', 'dev'], { cwd: FRONTEND, shell: isWin })
 }
 
-console.log(
-  `\n  ${color.bold('Frontend')}  http://localhost:${webPort}` +
-    `\n  ${color.bold('API docs')}  http://localhost:${apiPort}/api/docs\n`,
-)
+if (mode === 'prod') {
+  console.log(color.cyan('▸ Сборка фронтенда (production)...'))
+  if ((await runNpm(['run', 'build'])) !== 0) {
+    console.error(color.red('Сборка фронтенда завершилась с ошибкой'))
+    process.exit(1)
+  }
+  const py = backendPython(['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', apiPort])
+  start('app', color.cyan, py.cmd, py.args, { cwd: BACKEND })
+  console.log(
+    `\n  ${color.bold('ForteWatch UI & API')}  http://localhost:${apiPort}` +
+      `\n  ${color.bold('Swagger API docs')}     http://localhost:${apiPort}/api/docs` +
+      `\n  ${color.bold('API Key')}              см. ANALYSIS_API_KEY в корневом .env\n`,
+  )
+} else {
+  if (needsBackend) {
+    const py = backendPython(['-m', 'uvicorn', 'app.main:app', '--reload', '--host', '127.0.0.1', '--port', apiPort])
+    start('api', color.cyan, py.cmd, py.args, { cwd: BACKEND })
+  }
+  if (needsFrontend) {
+    const cmd = isWin ? 'cmd.exe' : 'npm'
+    const args = isWin ? ['/d', '/s', '/c', 'npm', 'run', 'dev'] : ['run', 'dev']
+    start('web', color.magenta, cmd, args, { cwd: FRONTEND })
+  }
+  console.log(
+    `\n  ${color.bold('Frontend')}  http://localhost:${webPort}` +
+      `\n  ${color.bold('API docs')}  http://localhost:${apiPort}/api/docs` +
+      `\n  ${color.bold('API Key')}   см. ANALYSIS_API_KEY в корневом .env\n`,
+  )
+}

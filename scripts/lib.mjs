@@ -12,20 +12,22 @@ export const isWin = process.platform === 'win32'
 const c = (code) => (s) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s)
 export const color = { cyan: c(36), magenta: c(35), green: c(32), yellow: c(33), red: c(31), dim: c(2), bold: c(1) }
 
-export function loadEnv() {
+export function loadEnv(override = false) {
   const file = join(ROOT, '.env')
   if (!existsSync(file)) return
-  // Простой парсер .env (process.loadEnvFile есть не во всех версиях Node).
   for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^\s*([\w.]+)\s*=\s*(.*)\s*$/)
     if (!m || line.trim().startsWith('#')) continue
     const value = m[2].replace(/^(['"])(.*)\1$/, '$2')
-    if (process.env[m[1]] === undefined) process.env[m[1]] = value
+    if (override || process.env[m[1]] === undefined || process.env[m[1]] === '') {
+      process.env[m[1]] = value
+    }
   }
 }
 
 export function hasCommand(cmd) {
-  const r = spawnSync(cmd, ['--version'], { stdio: 'ignore', shell: isWin })
+  const probe = isWin ? 'where.exe' : 'which'
+  const r = spawnSync(probe, [cmd], { stdio: 'ignore', windowsHide: true })
   return r.status === 0
 }
 
@@ -52,7 +54,7 @@ export const childEnv = (extra = {}) => ({ ...process.env, PYTHONUTF8: '1', PYTH
 /** Запуск с наследованием вывода. Возвращает Promise с кодом выхода. */
 export function run(cmd, args, { cwd = ROOT, shell = false, env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: 'inherit', shell, env: env ?? childEnv() })
+    const child = spawn(cmd, args, { cwd, stdio: 'inherit', shell, windowsHide: true, env: env ?? childEnv() })
     child.on('exit', (code) => resolve(code ?? 1))
     child.on('error', (err) => {
       console.error(color.red(`Failed to start ${cmd}: ${err.message}`))
@@ -67,11 +69,54 @@ export function runPython(args, opts = {}) {
 }
 
 export function runNpm(args, opts = {}) {
-  return run('npm', args, { cwd: FRONTEND, shell: isWin, ...opts })
+  if (isWin) {
+    return run('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], { cwd: FRONTEND, ...opts })
+  }
+  return run('npm', args, { cwd: FRONTEND, ...opts })
+}
+
+export async function pingOllama(baseUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434') {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/tags`, { signal: AbortSignal.timeout(2000) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function ensureOllamaAndModel() {
+  const baseUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434'
+  if (!(await pingOllama(baseUrl))) {
+    if (hasCommand('ollama')) {
+      console.log(color.dim('  Локальный сервер Ollama не запущен — запускаю ollama serve в фоне...'))
+      const daemon = spawn('ollama', ['serve'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      daemon.unref()
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        if (await pingOllama(baseUrl)) break
+      }
+    }
+  }
+  if (await pingOllama(baseUrl)) {
+    const code = await runPython([join(ROOT, 'scripts', 'prepare_model.py')])
+    if (code !== 0) {
+      console.warn(color.yellow('  ⚠ Не удалось подготовить модель через prepare_model.py'))
+    }
+  } else {
+    console.warn(
+      color.yellow('  ⚠ Локальный Ollama недоступен на ') +
+        baseUrl +
+        color.yellow('. Запустите Ollama перед анализом видео.'),
+    )
+  }
 }
 
 export function killTree(child) {
   if (!child || child.exitCode !== null) return
-  if (isWin) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+  if (isWin) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
   else child.kill('SIGTERM')
 }
