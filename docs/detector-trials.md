@@ -82,3 +82,28 @@ Compare verdicts and per-video changes as well as aggregate scores. For localiza
 use the same matched set and disclose missing events; never improve MAE by dropping
 difficult predictions. The spreadsheet supplies no event types, so a nearby candidate
 or a positive verifier decision does not establish the semantic cause of an error.
+
+## Rejected full-data temporal-context experiment
+
+The experiment added nine evenly spaced images to the evidence-verifier request for
+`cash_not_secured` and `cashier_leaves_client`. It kept the 42-video proposal frames,
+prompts, model, thresholds, and three returned evidence frames unchanged. Exact source,
+Ollama version, model digest and archive SHA-256 are in the ignored
+`backend/data/validation/dense-verification-01/manifest.json`.
+
+| Measure | Fresh baseline | Nine-frame verifier |
+| --- | ---: | ---: |
+| Completed / failed | 42 / 0 | 42 / 0 |
+| TP / TN / FP / FN | 17 / 6 / 14 / 5 | 17 / 4 / 16 / 5 |
+| Verdict agreement | 54.76% | 50.00% |
+| Precision / recall / F1 | 54.84% / 77.27% / 64.15% | 51.52% / 77.27% / 61.82% |
+| Maximum processing time | 73.297 s | 98.360 s |
+| Timestamp MAE on 17 predicted positives | 9.527 s | 8.422 s |
+| Positive videos within diagnostic 2 s | 7 / 22 | 9 / 22 |
+
+The candidate added two false-positive videos (X-10 and X-16), with no change in
+TP or FN. A better timestamp MAE and two-second count do not compensate for worse
+verdict accuracy and more false positives; labels contain no event types with which
+to verify semantic localization. The agreed acceptance condition—fewer FP and FN no
+higher than baseline—fails. Commit `88e72c7` is therefore reverted on the follow-up
+branch. Until that revert is merged, `main` still runs the nine-frame variant.
