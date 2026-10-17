@@ -1,6 +1,8 @@
 import base64
+import json
 import subprocess
 import time
+from pathlib import Path
 
 import cv2
 import httpx
@@ -348,3 +350,189 @@ def test_locked_progress_snapshot_does_not_fail_job_polling(client, monkeypatch)
     monkeypatch.setattr(type(directory), "read_text", read_text)
     response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
     assert response.json()["progress"] == 40
+
+
+def test_unlink_error_during_finalization_preserves_terminal_status_and_releases_slot(
+    client, monkeypatch
+):
+    original_unlink = Path.unlink
+
+    def mock_unlink(path, *args, **kwargs):
+        if path.name == "input.mov":
+            raise PermissionError("Simulated Windows file lock on input.mov")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", mock_unlink)
+    response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"not a video")}
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    for _ in range(200):
+        job = client.get("/api/v1/jobs/" + job_id, headers=HEADERS).json()
+        if job["status"] != "processing":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "failed"
+    # Worker slot must be released so next upload is accepted
+    next_response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"not a video")}
+    )
+    assert next_response.status_code == 202
+
+
+def test_unlink_error_on_rejected_upload_preserves_http_status_and_releases_slot(
+    client, monkeypatch
+):
+    manager = client.app.state.analysis
+    original_unlink = Path.unlink
+
+    def mock_unlink(path, *args, **kwargs):
+        if path.name == "input.mov":
+            raise PermissionError("Simulated file lock on empty video cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", mock_unlink)
+
+    # 1. Empty video upload rejected with 422
+    response_empty = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"")}
+    )
+    assert response_empty.status_code == 422
+
+    # Worker slot must be free; next valid upload must be accepted
+    monkeypatch.setattr(manager.pool, "submit", lambda *_: None)
+    next_response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"valid video")}
+    )
+    assert next_response.status_code == 202
+    manager._release_slot()
+
+    # 2. Oversized upload rejected with 413
+    get_settings().max_upload_mb = 0
+    try:
+        response_oversized = client.post(
+            "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"large")}
+        )
+        assert response_oversized.status_code == 413
+        assert manager.slot.acquire(blocking=False)
+        manager._release_slot()
+    finally:
+        get_settings().max_upload_mb = 500
+
+
+def test_temporary_write_error_recovered_by_retry(client, monkeypatch):
+    manager = client.app.state.analysis
+    attempts = 0
+    real_atomic_json = service.atomic_json
+
+    def flaky_atomic_json(path, content, *args, **kwargs):
+        nonlocal attempts
+        if path.name == "job.json" and "processing" not in content:
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("Temporary Windows file lock on job.json")
+        return real_atomic_json(path, content, *args, **kwargs)
+
+    monkeypatch.setattr(service, "atomic_json", flaky_atomic_json)
+
+    response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"not a video")}
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    for _ in range(200):
+        job = client.get("/api/v1/jobs/" + job_id, headers=HEADERS).json()
+        if job["status"] != "processing":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "failed"
+    assert attempts >= 3
+    assert manager.slot.acquire(blocking=False)
+    manager._release_slot()
+
+
+def test_persistent_write_error_does_not_leak_slot_or_report_done(client, monkeypatch):
+    class MockSuccessProcess:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def mock_popen(command, *args, **kwargs):
+        directory = Path(command[3])
+        result_data = {
+            "verdict": "no_violation",
+            "violations": [],
+            "model": "qwen3.5:4b",
+            "sampled_frames": 10,
+            "duration_sec": 5.0,
+            "limitations": "none",
+        }
+        (directory / "result.json").write_text(json.dumps(result_data), encoding="utf-8")
+        return MockSuccessProcess()
+
+    monkeypatch.setattr(service.subprocess, "Popen", mock_popen)
+
+    real_atomic_json = service.atomic_json
+
+    def failing_terminal_write(path, content, *args, **kwargs):
+        if path.name == "job.json" and "processing" not in content:
+            raise PermissionError("Permanent lock on job.json")
+        return real_atomic_json(path, content, *args, **kwargs)
+
+    monkeypatch.setattr(service, "atomic_json", failing_terminal_write)
+
+    response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"video")}
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    for _ in range(200):
+        job = client.get("/api/v1/jobs/" + job_id, headers=HEADERS).json()
+        if job["status"] != "processing":
+            break
+        time.sleep(0.05)
+
+    # Server could not persist terminal state: API must NOT report done!
+    assert job["status"] != "done"
+    assert job["status"] == "failed"
+    assert "storage" in job["error"].lower() or "save" in job["error"].lower()
+
+    # Slot must be released and next upload must be accepted
+    next_response = client.post(
+        "/api/v1/analyze", headers=HEADERS, files={"file": ("clip.mov", b"video")}
+    )
+    assert next_response.status_code == 202
+
+
+def test_atomic_json_retries_and_cleans_up_tmp(tmp_path, monkeypatch):
+    target = tmp_path / "data.json"
+    attempts = 0
+    original_replace = Path.replace
+
+    def flaky_replace(self, target_path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("Locked")
+        return original_replace(self, target_path)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    atomic_json(target, '{"key": "value"}', attempts=3)
+    assert target.read_text(encoding="utf-8") == '{"key": "value"}'
+    assert not target.with_suffix(".tmp").exists()
+
+    # With persistent failure, it cleans up .tmp and raises
+    def permanent_fail(*args, **kwargs):
+        raise PermissionError("Permanent")
+
+    monkeypatch.setattr(Path, "replace", permanent_fail)
+    with pytest.raises(PermissionError):
+        atomic_json(target, '{"fail": true}', attempts=2)
+    assert not target.with_suffix(".tmp").exists()
+
