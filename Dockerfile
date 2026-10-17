@@ -33,5 +33,5 @@ EXPOSE 8000
 
 WORKDIR /app/backend
 
-# Автоматически накатываем миграции и сидим при старте, затем запускаем uvicorn
-CMD ["sh", "-c", "python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+# Автоматически создаём директорию data, накатываем миграции и запускаем uvicorn
+CMD ["sh", "-c", "mkdir -p data && python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

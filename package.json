@@ -19,6 +19,7 @@
     "lint": "node scripts/py.mjs -m ruff check . && npm --prefix frontend run typecheck",
     "format": "node scripts/py.mjs -m ruff format . && node scripts/py.mjs -m ruff check --fix .",
     "build": "npm --prefix frontend run build",
-    "start": "node scripts/dev.mjs prod"
+    "start": "node scripts/dev.mjs prod",
+    "docker": "node scripts/dev.mjs docker"
   }
 }

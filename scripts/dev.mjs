@@ -10,7 +10,35 @@ import {
   ensureOllamaAndModel, isWin, killTree, loadEnv, run, runNpm, runPython,
 } from './lib.mjs'
 
-const mode = process.argv[2] // 'api' | 'web' | 'prod' | undefined
+const mode = process.argv[2] // 'api' | 'web' | 'prod' | 'docker' | undefined
+
+if (mode === 'docker') {
+  if (!existsSync(join(ROOT, '.env'))) {
+    const { copyFileSync } = await import('node:fs')
+    copyFileSync(join(ROOT, '.env.example'), join(ROOT, '.env'))
+  }
+  loadEnv(true)
+  if (!process.env.ANALYSIS_API_KEY || !process.env.SECRET_KEY) {
+    const { randomBytes } = await import('node:crypto')
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    let text = readFileSync(join(ROOT, '.env'), 'utf8')
+    for (const name of ['ANALYSIS_API_KEY', 'SECRET_KEY']) {
+      const val = `${name}=${randomBytes(32).toString('base64url')}`
+      const re = new RegExp(`^${name}=.*$`, 'm')
+      text = re.test(text) ? text.replace(re, val) : `${text.trimEnd()}\n${val}\n`
+    }
+    writeFileSync(join(ROOT, '.env'), text, 'utf8')
+    loadEnv(true)
+  }
+  const apiPort = process.env.API_PORT || '8000'
+  console.log(
+    `\n  ${color.bold('ForteWatch Docker')}   http://localhost:${apiPort}` +
+      `\n  ${color.bold('Swagger API docs')}    http://localhost:${apiPort}/api/docs` +
+      `\n  ${color.bold('X-API-Key (.env)')}    в файле .env (ANALYSIS_API_KEY)\n`,
+  )
+  const code = await run('docker', ['compose', 'up', '--build'], { cwd: ROOT })
+  process.exit(code)
+}
 
 const needsBackend = mode !== 'web'
 const needsFrontend = mode !== 'api'

@@ -4,9 +4,12 @@
 
 ---
 
-## Быстрый запуск в 1 команду
+## Быстрый запуск в 1 команду (Нативно или через Docker)
 
-Требования: **Node.js 20.19+**, **Python 3.11+**, **Ollama** (установленный локально).
+Проект поддерживает полностью автоматический запуск одной командой как напрямую в ОС, так и в изолированном Docker-окружении (рекомендуется, если на машине проверяющего не установлены нужные версии Python или Ollama).
+
+### Вариант А — Нативный запуск в 1 команду
+Требования: **Node.js 20.19+**, **Python 3.11+**, **Ollama**.
 
 ```bash
 npm start
@@ -18,15 +21,24 @@ npm start
 > 3. Проверяет доступность локального сервера Ollama (`http://127.0.0.1:11434`), при необходимости запускает `ollama serve` в фоне и проверяет/докачивает веса модели `qwen3.5:4b`.
 > 4. Применяет миграции БД (`alembic upgrade head`), собирает production-фронтенд и запускает единый сервер на **`http://localhost:8000`**.
 
-Альтернативные режимы запуска (также одной командой):
+### Вариант Б — Запуск в Docker в 1 команду (не требует Python и Ollama на хосте)
+Требования: только **Docker Desktop / Docker Engine** с Docker Compose.
+
+```bash
+docker compose up --build
+```
+*(или `npm run docker` — автоматически подготовит `.env` с ключами и запустит `docker compose up --build`)*
+
+> **Что делает Docker Compose автоматически:**
+> Поднимает локальный контейнер `ollama`, автоматически скачивает веса модели `qwen3.5:4b` через init-контейнер `model-init` (либо переиспользует локальный кэш при указании `OLLAMA_MODELS_DIR` в `.env`), собирает фронтенд + бэкенд и открывает сервис на **`http://localhost:8000`**. Если файл `.env` не создавался вручную, в Docker по умолчанию используется ключ `ANALYSIS_API_KEY=fortewatch-local-key` (либо значение `ANALYSIS_API_KEY` из вашего `.env`).
 
 | Режим | Команда | Адрес UI / API |
 | :--- | :--- | :--- |
 | **Production (единый порт)** | `npm start` | UI и API: `http://localhost:8000` · Swagger: `http://localhost:8000/api/docs` |
+| **Docker Compose (полная изоляция)** | `docker compose up --build` (или `npm run docker`) | UI и API: `http://localhost:8000` · Swagger: `http://localhost:8000/api/docs` |
 | **Development (hot-reload)** | `npm run dev` | UI: `http://localhost:5173` · API: `http://localhost:8000/api/docs` |
-| **Docker Compose** | `docker compose up --build` | UI и API: `http://localhost:8000` (включает локальный контейнер `ollama`) |
 
-Для работы через веб-интерфейс скопируйте сгенерированный `ANALYSIS_API_KEY` из корневого файла `.env` в поле **«API-ключ»**, выберите `.mov`-файл и нажмите **«Запустить анализ»**.
+Для работы через веб-интерфейс введите `ANALYSIS_API_KEY` из корневого файла `.env` в поле **«API-ключ»**, выберите `.mov`-файл и нажмите **«Запустить анализ»**.
 
 ![Интерфейс ForteWatch](docs/assets/ui-preview.png)
 
