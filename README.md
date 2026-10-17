@@ -16,7 +16,7 @@ See [setup, API and assumptions](docs/analyze-api.md) and the
 ## Stack
 
 - Backend: FastAPI, SQLAlchemy, Alembic
-- Frontend: React 19, TypeScript, Vite
+- Frontend: Vue 3, TypeScript, Vite
 - Local file storage for uploaded recordings
 - Docker Compose for running the app
 
