@@ -325,3 +325,26 @@ def test_invalid_verification_fails_after_three_attempts():
                 time.monotonic() + 10,
             )
     assert len(attempts) == 3
+
+
+def test_locked_progress_snapshot_does_not_fail_job_polling(client, monkeypatch):
+    manager = client.app.state.analysis
+    job_id = "d" * 32
+    directory = manager.root / job_id
+    directory.mkdir()
+    atomic_json(directory / "job.json", Job(job_id=job_id).model_dump_json())
+    atomic_json(directory / "progress.json", '{"progress":40,"stage":"local_inference"}')
+    read_text = type(directory).read_text
+
+    def read(path, *args, **kwargs):
+        if path.name == "progress.json":
+            raise PermissionError("Temporary Windows file lock")
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(directory), "read_text", read)
+    response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["status"] == "processing"
+    monkeypatch.setattr(type(directory), "read_text", read_text)
+    response = client.get("/api/v1/jobs/" + job_id, headers=HEADERS)
+    assert response.json()["progress"] == 40

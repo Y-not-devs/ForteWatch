@@ -94,8 +94,14 @@ class JobManager:
         job = Job.model_validate_json(path.read_text(encoding="utf-8"))
         progress = path.with_name("progress.json")
         if job.status == "processing" and progress.is_file():
-            state = json.loads(progress.read_text(encoding="utf-8"))
-            job.progress, job.stage = state["progress"], state["stage"]
+            try:
+                state = json.loads(progress.read_text(encoding="utf-8"))
+            except PermissionError:
+                # Windows/OneDrive can briefly lock the optional progress snapshot.
+                # Keep the durable processing state and try again on the next poll.
+                pass
+            else:
+                job.progress, job.stage = state["progress"], state["stage"]
         return job
 
     def _run(self, directory: Path) -> None:
