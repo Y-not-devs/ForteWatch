@@ -1,5 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
 import { defineConfig, loadEnv } from 'vite'
 
 // .env общий и лежит в корне репозитория.
@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: '..',
-    plugins: [react()],
+    plugins: [vue()],
     resolve: {
       alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
     },
