@@ -28,7 +28,7 @@ Uploads are saved under `backend/data/uploads/`; this folder and the source data
 
 ## Next implementation steps
 
-1. Validate video formats and sizes and create an analysis job for each upload.
+1. Create an analysis job for each accepted upload and show its processing status.
 2. Inspect the annotation spreadsheet and define the violation labels and expected output schema.
 3. Build a fully local video inference pipeline and capture timestamped evidence frames.
 4. Research and map findings to public regulatory sources, then show the source and explanation in the UI.
