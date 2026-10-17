@@ -1,19 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ExternalLink, Film, LayoutDashboard, Settings, ShieldAlert, Zap } from 'lucide-vue-next'
-import './layout.css'
+import { ShieldCheck, Cpu, ExternalLink } from 'lucide-vue-next'
 
-const apiTarget = '/api/docs'
 const backendStatus = ref<'online' | 'offline' | 'checking'>('checking')
 
 onMounted(async () => {
   try {
     const res = await fetch('/api/health')
-    if (res.ok) {
-      backendStatus.value = 'online'
-    } else {
-      backendStatus.value = 'offline'
-    }
+    backendStatus.value = res.ok ? 'online' : 'offline'
   } catch {
     backendStatus.value = 'offline'
   }
@@ -21,88 +15,78 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="app-layout">
-    <aside class="app-sidebar">
-      <div>
-        <div class="app-brand">
-          <div class="app-brand__icon">
-            <Zap :size="20" />
+  <div class="min-h-screen bg-[#090c13] text-slate-100 flex flex-col">
+    <!-- Top Navigation Bar -->
+    <header class="sticky top-0 z-30 border-b border-white/10 bg-[#0f1420]/80 backdrop-blur-md">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <!-- Brand / Identity -->
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-[#a51c30] to-indigo-600 flex items-center justify-center shadow-lg shadow-[#a51c30]/20 text-white">
+            <ShieldCheck class="w-5 h-5" />
           </div>
-          <div>
-            <div class="app-brand__title">ForteWatch</div>
-            <div class="small faint">v0.1.0 • dev</div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-lg tracking-tight text-white">ForteWatch</span>
+            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-[#a51c30]/20 text-red-400 border border-[#a51c30]/40">
+              AI
+            </span>
           </div>
-        </div>
-
-        <nav class="app-nav">
-          <a href="#" class="app-nav__item app-nav__item--active">
-            <LayoutDashboard :size="18" />
-            <span class="grow">Дашборд</span>
-          </a>
-          <a href="#" class="app-nav__item">
-            <Film :size="18" />
-            <span class="grow">Видеозаписи</span>
-          </a>
-          <a href="#" class="app-nav__item">
-            <ShieldAlert :size="18" />
-            <span class="grow">Нарушения</span>
-          </a>
-          <a href="#" class="app-nav__item">
-            <Settings :size="18" />
-            <span class="grow">Настройки</span>
-          </a>
-          <a :href="apiTarget" target="_blank" rel="noreferrer" class="app-nav__item">
-            <ExternalLink :size="18" />
-            <span class="grow">API Docs</span>
-          </a>
-        </nav>
-      </div>
-
-      <div class="app-sidebar__bottom">
-        <div class="row between" style="font-size: 0.82rem">
-          <span class="muted">Бэкенд</span>
-          <span
-            :style="{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '2px 8px',
-              borderRadius: '999px',
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              background:
-                backendStatus === 'online'
-                  ? 'rgba(34, 197, 94, 0.15)'
-                  : backendStatus === 'offline'
-                    ? 'rgba(239, 68, 68, 0.15)'
-                    : 'rgba(148, 163, 184, 0.15)',
-              color:
-                backendStatus === 'online'
-                  ? '#4ade80'
-                  : backendStatus === 'offline'
-                    ? '#f87171'
-                    : '#94a3b8',
-            }"
-          >
-            <span
-              :style="{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                background: 'currentColor',
-              }"
-            />
-            {{ backendStatus === 'online' ? 'Online' : backendStatus === 'offline' ? 'Offline' : 'Checking…' }}
+          <span class="hidden md:inline-block text-xs text-slate-400 pl-2 border-l border-white/10">
+            ForteBank Datathon 26 • Кассовая дисциплина
           </span>
         </div>
-        <div class="small faint" style="text-align: center; font-size: 0.75rem">
-          Local video review
+
+        <!-- Right Side: System Status & Actions -->
+        <div class="flex items-center gap-3 sm:gap-4">
+          <!-- Local On-Premise Badge -->
+          <div class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
+            <Cpu class="w-3.5 h-3.5" />
+            <span>100% On-Premise</span>
+          </div>
+
+          <!-- Backend Status Indicator -->
+          <div class="flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border"
+            :class="{
+              'bg-emerald-500/10 text-emerald-400 border-emerald-500/25': backendStatus === 'online',
+              'bg-red-500/10 text-red-400 border-red-500/25': backendStatus === 'offline',
+              'bg-slate-500/10 text-slate-400 border-slate-500/25': backendStatus === 'checking',
+            }"
+          >
+            <span class="w-2 h-2 rounded-full"
+              :class="{
+                'bg-emerald-400 animate-pulse': backendStatus === 'online',
+                'bg-red-400': backendStatus === 'offline',
+                'bg-slate-400': backendStatus === 'checking',
+              }"
+            />
+            <span>{{ backendStatus === 'online' ? 'API Online' : backendStatus === 'offline' ? 'API Offline' : 'Проверка...' }}</span>
+          </div>
+
+          <!-- API Docs Swagger Link -->
+          <a
+            href="/api/docs"
+            target="_blank"
+            rel="noreferrer"
+            class="hidden sm:inline-flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors px-2 py-1 rounded hover:bg-white/5"
+            title="Открыть документацию Swagger OpenAPI"
+          >
+            <span>Swagger</span>
+            <ExternalLink class="w-3.5 h-3.5" />
+          </a>
+
+          <!-- Custom Slot for Header Actions (e.g. New Review Button) -->
+          <slot name="header-actions" />
         </div>
       </div>
-    </aside>
+    </header>
 
-    <main class="app-main">
+    <!-- Main Content -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <slot />
     </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 py-4 text-center text-xs text-slate-500">
+      ForteWatch • Локальный видеомониторинг кассовой дисциплины • Регламенты НПА РК
+    </footer>
   </div>
 </template>

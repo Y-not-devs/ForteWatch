@@ -1,30 +1,35 @@
-export interface MetaFeatures {
-  auth: boolean
-  uploads: boolean
+export interface EvidenceFrame {
+  timestamp_sec: number
+  image_base64: string
 }
 
-export interface AppMeta {
-  app_name: string
-  environment: string
-  features: MetaFeatures
+export interface RuleSource {
+  title: string
+  document: string
+  section: string
+  url?: string
+  rationale: string
 }
 
-export interface User {
-  id: number
-  email: string
-  name: string
+export interface Violation {
+  type: string
+  timecode_sec: number
+  description: string
+  evidence_frames: EvidenceFrame[]
+  rule?: RuleSource
 }
 
-export interface TokenResponse {
-  access_token: string
-  token_type: string
-  user: User
-}
+export type JobStatus = 'idle' | 'uploading' | 'processing' | 'done' | 'failed'
+export type JobVerdict = 'violation' | 'no_violation' | null
 
-export interface UploadFileItem {
-  name: string
-  url: string
-  size: number
-  content_type: string
-  created_at: string
+export interface AnalysisJob {
+  job_id: string
+  status: JobStatus
+  stage?: string
+  progress?: number
+  elapsed_sec?: number
+  error?: string | null
+  verdict?: JobVerdict
+  limitations?: string | null
+  violations: Violation[]
 }
